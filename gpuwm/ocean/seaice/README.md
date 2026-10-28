@@ -35,9 +35,24 @@ forcing's XICE and SNOW fields. `seaice_new_ice_thickness = 0.5` m controls
 new-ice area. `seaice_ocean_heat_flux = 2.0` W m-2 is a prescribed lower
 boundary, not a forecast ocean circulation. Ice-free water only freezes
 when the water-temperature owner supplies water at/below 271.35 K.
-With `sf_ocean_physics=1`, the mixed layer consumes the ocean-side heat budget,
+With `sf_ocean_physics=1`, the mixed layer consumes the ocean-side heat budget
+where ice is present (`ice_ocean_coupled`, plus owned water the atmosphere sees
+as land); ice-free open ocean keeps the atmosphere's own fluxes,
 and updates the water SST separately from the blended ice/water skin. Any mixed-layer cooling below freezing forms additional ice with equal
 and opposite latent heat, leaving the water at its freezing point. With
+`sf_ocean_physics=2` (3D PWP, the default for runs of 48 h or longer), the
+PWP step skips its atmospheric surface heat where ice is present (the columns
+whose surface fluxes the ice step set, `ice_ocean_coupled`),
+and the PWP mixed layer (the surface layer and every layer whose top lies
+above OM_ML) takes the same ocean-side heat budget instead, spread evenly over
+its depth, so the ocean-to-ice heat flux leaves the column. Each layer this
+leaves below Tf freezes the same way, giving up (Tf-T) rho c dz. Heat too
+small for a float32 temperature to resolve in one step waits in
+`ice_ocean_owed` (J m-2) rather than being rounded away. Columns PWP does not
+own are left alone. On a cold start the PWP
+profile is seeded no colder than the freezing point where this model owns
+the water, as SST is, so analysis water between its salinity freezing point
+and 271.35 K is not turned into ice. With
 that option absent, SST and the lower heat boundary remain prescribed.
 Analysis SST masked to zero beneath sea ice is initialized at the seawater
 freezing point. In coupled columns, entrained water is bounded below by that

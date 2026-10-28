@@ -14,7 +14,7 @@ ladder cannot plan from (no ``[fetch]`` source and cycle), the request is
 refused by name with the remedy.
 """
 from contextlib import nullcontext
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -221,13 +221,14 @@ def test_a_source_with_no_operational_ensemble_is_refused_with_the_remedy():
     assert member_source_remedy(2) in message
 
 
-def test_an_operational_ensemble_that_cannot_cover_the_window_says_why():
-    with pytest.raises(recipe_door.RecipeRefusal) as refused:
-        recipe_door.plan_recipe(EnsembleRequest(2), payload("gfs", hours=1), experiment(hours=1))
-    message = str(refused.value)
-    assert message.startswith(copies_breakage(2))
-    assert "that plan cannot be made for this request" in message and "valid-time knots" in message
-    assert member_source_remedy(2) in message
+def test_an_operational_ensemble_brackets_a_window_shorter_than_its_cadence():
+    # A 1 h window on the 3-hourly operational ensemble acquires the f0/f3
+    # knots that enclose it and keeps its own end (U-E2); before, the plan
+    # was refused with "does not publish the requested f0/f1 valid-time knots".
+    recipe = recipe_door.plan_recipe(EnsembleRequest(2), payload("gfs", hours=1), experiment(hours=1))
+    assert recipe.kind == "input-ensemble"
+    assert recipe.end - recipe.start == timedelta(hours=1)
+    assert {recipe.acquisition_window(member.trajectory) for member in recipe.members} == {(0, 3)}
 
 
 def test_a_named_recipe_keeps_the_doors_own_refusal():

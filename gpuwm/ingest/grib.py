@@ -192,6 +192,48 @@ def canonical_units(entries: tuple[VtableEntry, ...]) -> Mapping[str, str]:
     })
 
 
+#: A materialized snapshot at least this large copies its fields on host
+#: threads (:func:`_copy_fields_in_parallel`); a smaller one copies inline.
+_PARALLEL_FIELD_COPY_BYTES = 32 * 1024 * 1024
+
+
+def _copy_fields_in_parallel(snapshot, nlev, horizontal, copied_fields) -> bool:
+    """Copy a materialized field mapping on host threads; False to go serial.
+
+    THE BREAKAGE: the defensive copy below was the largest single-core
+    pass of a GFS preparation (13 % of its main thread on a desktop host, every
+    decoded lead copied field by field).  A mapping already holds every
+    raw field, so copying them concurrently raises no peak; each field is
+    validated first, in order, so the first refusal is the serial one, and
+    each copy is the same ``ndarray.copy`` (NumPy releases the GIL), so the
+    snapshot's bytes are unchanged.  A streamed ``from_field_items``
+    producer stays serial (it is not a Mapping).
+    """
+
+    items = list(snapshot.fields.items())
+    if len(items) < 2:
+        return False
+    checked = [(name, snapshot._checked_field(name, raw, nlev, horizontal))
+               for name, raw in items]
+    if sum(int(value.nbytes) for _, value in checked) < _PARALLEL_FIELD_COPY_BYTES:
+        for name, value in checked:
+            copied = value.copy()
+            copied.setflags(write=False)
+            copied_fields[name] = copied
+        return True
+    from gpuwm.ingest.host_parallel import map_ordered
+
+    def copy(value):
+        copied = value.copy()
+        copied.setflags(write=False)
+        return copied
+
+    for (name, _), copied in zip(checked, map_ordered(
+            copy, [value for _, value in checked])):
+        copied_fields[name] = copied
+    return True
+
+
 @dataclass(frozen=True)
 class Era5Snapshot:
     """All decoded ERA5 fields at one UTC valid time.
@@ -252,41 +294,56 @@ class Era5Snapshot:
         nlev = axes["levels_hpa"].size
         horizontal = (axes["latitude"].size, axes["longitude"].size)
         copied_fields: dict[str, np.ndarray] = {}
-        for name, raw in self.fields.items():
-            if not isinstance(name, str) or not name:
-                raise TypeError("field names must be non-empty strings")
-            value = np.asarray(raw)
-            if value.dtype != np.float64:
-                raise TypeError(f"field {name} must have dtype float64")
-            field_horizontal = self._field_horizontal_shape(name, horizontal)
-            allowed_shapes = (field_horizontal, (nlev, *field_horizontal))
-            mapped_soil_shape = (
-                name in {MAPPED_SOIL_TEMPERATURE, MAPPED_SOIL_MOISTURE}
-                and value.ndim == 3
-                and value.shape[0] > 0
-                and value.shape[1:] == horizontal
-            )
-            if value.shape not in allowed_shapes and not mapped_soil_shape:
-                # Name the shape THIS field is held to: a windowed snapshot
-                # expects its atmospheric fields at the window, and a
-                # refusal that printed the full source axes read as
-                # "expected exactly what you gave me".
-                raise ValueError(
-                    f"{name} has shape {value.shape}; expected "
-                    f"{field_horizontal} or {(nlev, *field_horizontal)}"
-                    + (f" (the source axes are {horizontal})"
-                       if field_horizontal != horizontal else "")
-                )
-            copied = value.copy()
-            copied.setflags(write=False)
-            copied_fields[name] = copied
-            # The item producer may read the next full field on resumption.
-            del raw, value, copied
+        if not (isinstance(self.fields, Mapping)
+                and _copy_fields_in_parallel(self, nlev, horizontal,
+                                             copied_fields)):
+            self._copy_fields_serially(nlev, horizontal, copied_fields)
 
         object.__setattr__(self, "levels_hpa", axes["levels_hpa"])
         object.__setattr__(self, "latitude", axes["latitude"])
         object.__setattr__(self, "longitude", axes["longitude"])
         object.__setattr__(self, "fields", MappingProxyType(copied_fields))
+
+    def _checked_field(self, name, raw, nlev, horizontal):
+        """``raw`` as an array held to its dtype and shape contract."""
+
+        if not isinstance(name, str) or not name:
+            raise TypeError("field names must be non-empty strings")
+        value = np.asarray(raw)
+        if value.dtype != np.float64:
+            raise TypeError(f"field {name} must have dtype float64")
+        field_horizontal = self._field_horizontal_shape(name, horizontal)
+        allowed_shapes = (field_horizontal, (nlev, *field_horizontal))
+        mapped_soil_shape = (
+            name in {MAPPED_SOIL_TEMPERATURE, MAPPED_SOIL_MOISTURE}
+            and value.ndim == 3
+            and value.shape[0] > 0
+            and value.shape[1:] == horizontal
+        )
+        if value.shape not in allowed_shapes and not mapped_soil_shape:
+            # Name the shape THIS field is held to: a windowed snapshot
+            # expects its atmospheric fields at the window, and a
+            # refusal that printed the full source axes read as
+            # "expected exactly what you gave me".
+            raise ValueError(
+                f"{name} has shape {value.shape}; expected "
+                f"{field_horizontal} or {(nlev, *field_horizontal)}"
+                + (f" (the source axes are {horizontal})"
+                   if field_horizontal != horizontal else "")
+            )
+        return value
+
+    def _copy_fields_serially(self, nlev, horizontal, copied_fields):
+        """One field at a time: a streamed producer (``from_field_items``)
+        releases each decoded field once it has been copied."""
+
+        for name, raw in self.fields.items():
+            value = self._checked_field(name, raw, nlev, horizontal)
+            copied = value.copy()
+            copied.setflags(write=False)
+            copied_fields[name] = copied
+            # The item producer may read the next full field on resumption.
+            del raw, value, copied
 
     def _field_horizontal_shape(self, name, horizontal):
         return horizontal

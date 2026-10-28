@@ -303,6 +303,9 @@
     "msl": {
       "units": "Pa"
     },
+    "mslp": {
+      "units": "Pa"
+    },
     "refc": {
       "units": "dBZ"
     }
@@ -1279,7 +1282,8 @@
         {
           "format": "netcdf",
           "name": [
-            "msl"
+            "msl",
+            "mslp"
           ]
         }
       ],

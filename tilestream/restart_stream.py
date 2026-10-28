@@ -861,8 +861,9 @@ def prepare_streamed_restart(path, store, cfg, *, scalars, setup,
         path.parent.mkdir(parents=True, exist_ok=True)
         temp = path.with_name(path.name + ".tmp")
         try:
-            with temp.open("wb") as stream:
-                np.savez(stream, **body)
+            # np.savez's archive, byte for byte, from every core.
+            from gpuwm.io.parallel_npz import write_npz
+            write_npz(temp, body)
             restart.fsync_file(temp)
             os.replace(temp, path)
         except BaseException:

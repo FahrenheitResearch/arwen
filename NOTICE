@@ -918,7 +918,7 @@ below; a renderer shipped without it would satisfy clause 2 nowhere.
 
 Compiled artifacts (release bridge bundles and platform wheels)
 
-74 Rust executables and libraries (gpuwm.bridge_assets
+75 Rust executables and libraries (gpuwm.bridge_assets
 .BUNDLED_ARTIFACTS) are distributed in compiled form: as GitHub release
 bridge bundles, and staged into platform wheels at gpuwm/libexec/bridges/.
 A platform wheel carries all of them except the on-demand set

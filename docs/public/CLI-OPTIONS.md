@@ -652,7 +652,7 @@ Takes no options of its own.
 | `--export {earth2}` | _(the parser declares no help text for this option)_ |
 | `--geog-root DIR` | geography tree the regional or nest preparation reads (default: the staged WPS_GEOG tree); a dry run checks the named tree |
 | `--hours` | _(the parser declares no help text for this option)_ |
-| `--ic-source` | initial conditions: era5, gfs, hrrr |
+| `--ic-source` | initial conditions: era5, gfs, hrrr, ifs |
 | `--mix` | parent sources and counts, e.g. source:18,source:18 |
 | `--model` | table id or alias |
 | `--nest` | inner grid spacing, e.g. 2.5km |
@@ -2726,7 +2726,8 @@ Takes no options of its own.
 | `--accept-licence LICENCE` | explicitly accept a model row's exact restricted/unresolved weight licence; repeat for multiple licences |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--input` | _(the parser declares no help text for this option)_ |
-| `--member` | _(the parser declares no help text for this option)_ |
+| `--member` | the frame's ensemble member (the GRIB member number the compose decodes) that the WPS export selects |
+| `--member-identity` | also seal --member into the input manifest under this identity policy (mapped_authoring); without it the member only selects the composed frame |
 | `--out` | _(the parser declares no help text for this option)_ |
 | `--profile` | packaged composition profile (overrides the source default) |
 | `--source` | source registry name, including earth2-<table key> |

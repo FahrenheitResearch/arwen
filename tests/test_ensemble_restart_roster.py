@@ -367,6 +367,38 @@ def test_sealing_preserves_live_writer_revision_and_reuses_only_sealed_inodes(tm
     assert (tmp_path / item["snapshot"]).read_bytes() == b"writer-owned history"
 
 
+def test_seal_survives_a_reader_hard_linking_the_live_source_during_the_copy(tmp_path, monkeypatch):
+    # WoFS run_8dd42875d520e1d3 (2026-10-26): a reader hard-linked a member's
+    # live restart files once a second. A link changes ctime, not a byte, and
+    # the seal counted ctime, so it repeated its copy and then failed the
+    # member with "ensemble snapshot source changed during copy".
+    import os
+    import time
+    identities = {"schema": restart_roster.CONTRACT, "member_order": [], "members": []}
+    restart_roster.atomic_json(tmp_path / restart_roster.IDENTITIES, identities)
+    restart_roster.atomic_json(tmp_path / "ensemble-run.json", {"members_completed": []})
+    live = tmp_path / "gpuwmrst_d02_frame.npz"
+    live.write_bytes(b"write-once checkpoint words")
+    original, links = restart_roster.digest_file, []
+    def digest_while_a_reader_links(path):
+        value = original(path)
+        if Path(path).name == live.name and Path(path) != live:
+            # The reader links on every pass, as the worker did once a second.
+            time.sleep(0.05)  # past the filesystem's coarse timestamp tick
+            reader = tmp_path / f"reader-link-{len(links)}.npz"
+            os.link(live, reader)
+            links.append(reader)
+        return value
+    monkeypatch.setattr(restart_roster, "digest_file", digest_while_a_reader_links)
+    document = restart_roster.seal(tmp_path, collector_files=[live.name])
+    assert len(links) == 1  # one copy, no repeated pass
+    item = next(row for row in document["files"] if row["path"] == live.name)
+    assert (tmp_path / item["snapshot"]).read_bytes() == b"write-once checkpoint words"
+    # A content change still counts.
+    live.write_bytes(b"rewritten checkpoint words, longer")
+    assert restart_roster._source_revision(live) != item["source_revision"]
+
+
 def test_seal_retries_when_another_member_retires_a_checkpoint_mid_pass(tmp_path, identity, monkeypatch):
     from gpuwm.io import restart
     from gpuwm import supervisor
@@ -402,6 +434,55 @@ def test_seal_retries_when_another_member_retires_a_checkpoint_mid_pass(tmp_path
     row = document["members"][1]
     assert row["status"] == "checkpoint" and row["checkpoint"].endswith("00_00_30.npz")
     assert all((tmp_path / item["path"]).is_file() for item in document["files"])
+
+
+def test_seal_links_write_once_checkpoint_sets_instead_of_copying_them(tmp_path, identity, monkeypatch):
+    # U-E10: every roster seal copied each member's write-once checkpoint set
+    # into its generation, 44-59 GB of host disk per sealed set on a
+    # checkpointed WoFS ensemble. A committed set is published by os.replace
+    # and never rewritten, so the sealed copy is a hard link: no added bytes.
+    from gpuwm.io import restart
+    from gpuwm import supervisor
+    collector = Collector(tmp_path)
+    member = tmp_path / "members" / "member-0001"
+    first = member / "gpuwmrst_d01_2024-01-01_00_00_30.npz"
+    later = member / "gpuwmrst_d01_2024-01-01_00_00_40.npz"
+    monkeypatch.setattr(restart, "read_restart_header",
+        lambda path: {"elapsed_seconds": 40 if "00_40" in Path(path).name else 30})
+    monkeypatch.setattr(supervisor, "validate_manifest_checkpoint", lambda path: path)
+    copied = []
+    real_copy = restart_roster.shutil.copyfile
+    monkeypatch.setattr(restart_roster.shutil, "copyfile",
+        lambda source, destination: copied.append(Path(source).name) or real_copy(source, destination))
+    def publish(path, words):
+        pending = path.with_name(path.name + ".tmp")
+        pending.write_bytes(words)
+        pending.replace(path)  # as restart._publish_restart_payload does
+    def interrupted(inputs, **options):
+        if current_capture().member_id == 1:
+            member.mkdir(parents=True, exist_ok=True)
+            publish(first, b"checkpoint 30 words")
+            options["progress_callback"](model_elapsed_seconds=30, outer_step=10, last_checkpoint=first)
+            publish(later, b"checkpoint 40 words")
+            options["progress_callback"](model_elapsed_seconds=40, outer_step=12, last_checkpoint=later)
+            raise KeyboardInterrupt()
+        collector.submit(member_id=0)
+        return {"status": "PASS"}
+    with pytest.raises(KeyboardInterrupt):
+        session(tmp_path, collector).run_prepared(interrupted, prepared(0))
+    document = json.loads((tmp_path / restart_roster.ROSTER).read_text())
+    assert document["members"][1]["checkpoint"].endswith("00_00_40.npz")
+    item = next(row for row in document["files"] if row["path"].endswith("00_00_40.npz"))
+    snapshot = tmp_path / item["snapshot"]
+    assert snapshot.stat().st_ino == later.stat().st_ino  # one inode, no second copy
+    assert not [name for name in copied if name.endswith(".npz")]
+    # Retiring the live set leaves the sealed one, and the roster still verifies.
+    later.unlink()
+    assert snapshot.read_bytes() == b"checkpoint 40 words"
+    identities = json.loads((tmp_path / restart_roster.IDENTITIES).read_text())
+    assert restart_roster.verify_roster(tmp_path / restart_roster.ROSTER, identities, root=tmp_path)
+    assert restart_roster.restore_roster(document, root=tmp_path)["restored"] == [item["path"]]
+    assert later.read_bytes() == b"checkpoint 40 words"
 
 
 @requires_netcdf_writer_bridge

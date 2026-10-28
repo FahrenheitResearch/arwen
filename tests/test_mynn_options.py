@@ -47,12 +47,24 @@ def test_scalar_selector_is_an_integer_switch(value):
 
 @pytest.mark.parametrize("overrides, reason", [
     ({"bl_mynn_mixscalars": 1}, "cannot be combined"),
-    ({"mp_physics": 8}, "Thompson aerosol scalar fields"),
+    ({"mp_physics": 30}, "SCALAR_PBLMIX_SPECIES has no row"),
     ({"bldt": 1.0}, "restart"),
 ])
 def test_scalar_mixing_refuses_missing_carriers_or_dropped_rates(overrides, reason):
     with pytest.raises((ValueError, NotImplementedError), match=reason):
         validate_run_config(_config(scalar_pblmix=1, **overrides))
+
+
+@pytest.mark.parametrize("mp_physics, species", [
+    (8, ("ni",)), (10, ("ni",)), (18, ("qndrop", "qni", "qnn", "qvolh")), (50, ("ni", "qir", "qib")), (6, ()),
+])
+def test_scalar_mixing_admits_every_tabled_microphysics(mp_physics, species):
+    """U-E4: WRF's diff4d mixes each scheme's own scalars, so scalar_pblmix=1
+    with any tabled microphysics is admitted (it refused all but mp=28)."""
+    from gpuwm.config import scalar_pblmix_species
+    cfg = _config(scalar_pblmix=1, mp_physics=mp_physics)
+    validate_run_config(cfg)
+    assert scalar_pblmix_species(cfg) == species
 
 
 def test_mixscalars_default_is_the_ported_generation_registry_default():

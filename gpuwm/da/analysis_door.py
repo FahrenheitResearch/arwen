@@ -42,7 +42,10 @@ import shutil
 import sys
 from typing import Any, Mapping
 
-from gpuwm.da.member_wave import sha256 as _sha
+# Once per process for each unchanged file (gpuwm.file_digest; same digests, same change detection): the
+# door hashed a member leg's derived files when it wrote them and again at every plan load and split read,
+# and its checkpoint twice, about 10 s of one core per 5 km leg (single-core law, 2026-10-27).
+from gpuwm.file_digest import sha256_file as _sha
 
 PLAN_SCHEMA = "gpuwm.analysis-door-plan/1"
 RECEIPT_SCHEMA = "gpuwm.analysis-door/1"
@@ -338,6 +341,34 @@ def read_split(path: Path, sha256: str) -> tuple[dict, dict]:
     return at_once, spread
 
 
+def split_shapes(forcing_plan: Mapping[str, Any]) -> tuple[dict[str, tuple], dict[str, tuple]]:
+    """``(at_once, spread)`` field shapes of a plan's split, by WRF name, with nothing decoded:
+    an in-memory plan's own arrays, or the ``.npy`` headers inside ``iau-split.npz``
+    (:func:`_write_split` stores them uncompressed, so only each member's header is read)."""
+
+    import zipfile
+
+    import numpy as np
+    from numpy.lib import format as npy
+
+    at_once, spread = {}, {}
+    if isinstance(forcing_plan.get("at_once"), Mapping):
+        for part, out in (("at_once", at_once), ("spread", spread)):
+            for name, value in forcing_plan[part].items():
+                out[name] = tuple(int(n) for n in np.shape(value))
+        return at_once, spread
+    with zipfile.ZipFile(Path(forcing_plan["path"])) as archive:
+        for member in archive.infolist():
+            key = member.filename[:-4] if member.filename.endswith(".npy") else member.filename
+            part, name = key.split("/", 1)
+            with archive.open(member) as handle:
+                version = npy.read_magic(handle)
+                header = (npy.read_array_header_1_0 if version == (1, 0) else npy.read_array_header_2_0)
+                shape = header(handle)[0]
+            (at_once if part == "at_once" else spread)[name] = tuple(int(n) for n in shape)
+    return at_once, spread
+
+
 def _run_inputs(directory: Path) -> dict[str, Path]:
     files = {"namelist.input": directory / "namelist.input", "wrfinput_d01": directory / "wrfinput_d01",
              "wrfbdy_d01": directory / "wrfbdy_d01"}
@@ -377,6 +408,11 @@ def resolve(request: Mapping[str, Any], *, directory: Path, outdir: Path, run_se
         return {"directory": Path(directory), "soil_source": soil_source, "plan": None,
                 "forecast_defaults": {}}
     directory = Path(directory).resolve()
+    if restart is not None:
+        # The worker checks the checkpoint's digest once the tree is restored (_first_application, the
+        # ledger): hashed here beside the bundle checks and the plan instead of on the worker's thread.
+        from gpuwm.file_digest import prefetch
+        prefetch(restart)
     try:
         bundle = load_bundle(source)
     except BundleRefusal as error:
@@ -436,6 +472,9 @@ def _write_plan(bundle, options, *, request, directory, inputs, outdir, work, re
     record: dict[str, Any] = {"options": dict(options)}
     derived: dict[str, dict[str, str]] = {}
     boundary_pair_file = None
+    # The increment's values as write_background read them, for the split below (one decode of the
+    # increment file per leg, not two; single-core law, 2026-10-27).
+    increment_read: dict[str, Any] = {}
     if restart_from is not None:
         start = "warm-start"
         run_file = Path(restart_from).resolve()
@@ -461,7 +500,8 @@ def _write_plan(bundle, options, *, request, directory, inputs, outdir, work, re
         shutil.copyfile(inputs["namelist.input"], run_directory / "namelist.input")
         if start == "iau":
             record["background"] = write_background(bundle.analysis, bundle.increment,
-                                                     run_directory / "wrfinput_d01")
+                                                     run_directory / "wrfinput_d01",
+                                                     increment_read=increment_read)
             background = run_directory / "wrfinput_d01"
         else:
             _place(bundle.analysis, run_directory / "wrfinput_d01")
@@ -503,11 +543,15 @@ def _write_plan(bundle, options, *, request, directory, inputs, outdir, work, re
         # worker can say how far the restored state is from it, and (3d) so a mass increment's
         # geopotential share is integrated on its columns.
         background = work / "background.nc"
-        record["background"] = write_background(bundle.analysis, bundle.increment, background)
-        derived["background.nc"] = {"path": str(background), "sha256": _sha(background)}
+        record["background"] = write_background(bundle.analysis, bundle.increment, background,
+                                                 increment_read=increment_read)
+        # Its digest goes into the plan: hashed on a thread beside the split below, read back after it.
+        from gpuwm.file_digest import prefetch
+        prefetch(background)
+        derived["background.nc"] = {"path": str(background), "sha256": None}
     forcing = None
     if bundle.increment is not None and (options["on"] or start in ("warm-start", "cycling-restart")):
-        increment = read_increment(bundle.increment)
+        increment = increment_read or read_increment(bundle.increment)
         at_once, spread, record["split"] = split_increment(
             increment, mode=options["mode"], fields=options.get("fields", DEFAULT_FIELDS),
             background=background, hypsometric_opt=hypsometric_opt, coordinate=inputs["wrfinput_d01"])
@@ -515,6 +559,8 @@ def _write_plan(bundle, options, *, request, directory, inputs, outdir, work, re
         forcing = {"path": str(split_path), "sha256": _write_split(split_path, at_once, spread),
                    "at_once": sorted(at_once), "spread": sorted(spread)}
         derived[SPLIT] = {"path": forcing["path"], "sha256": forcing["sha256"]}
+    if "background.nc" in derived and derived["background.nc"]["sha256"] is None:
+        derived["background.nc"]["sha256"] = _sha(background)
     defaults = {}
     for flag, value in parse_forecast_args((bundle.manifest.get("forecast") or {}).get("args") or []):
         defaults[flag.lstrip("-").replace("-", "_")] = value
@@ -666,6 +712,133 @@ def state_increments(increments: Mapping[str, Any], state, cfg) -> dict[str, Any
     return out
 
 
+class _StreamedDoorSteps:
+    """The door's post-step acts on a root integrated out of a host store.
+
+    THE BREAKAGE IT CLOSES.  On the tiled road the root's ``DomainState`` is
+    the snapshot its store was filled from and nothing integrates it
+    (``StreamedDomain.refresh_state``).  The door's per-step acts read and
+    wrote that snapshot: the dry-mass share of the window (G9b) went into a
+    state no step reads, so the mass increment never reached the model while
+    G9b counted it applied, and the balance series (MASPT, the G4 promotion
+    input) differenced a state that never moved.  Here both act on the
+    compute windows the sweep steps (:class:`gpuwm.da.iau.IauSweepLease`):
+    the share is added to each window right after its step, before the
+    scatter, with the resident words (:meth:`IncrementalUpdate.apply_window`),
+    and each window's owned columns of the lowest level are copied into
+    domain planes the balance probe reads (:class:`_PlaneSurface`).  The
+    step's share is the one the resident observer computes, from the same
+    integer-tick clock (``model_seconds`` of the tree runner's observer),
+    and is booked once per domain step.
+    """
+
+    def __init__(self, door, *, clock, state):
+        self.door = door
+        self.clock = clock
+        self.state = state
+        self.used = False
+        self.steps = 0
+        self.fraction = 0.0
+        self.after = None
+        self.planes = None
+        self.events = []
+        self._read_done = None
+
+    def begin_step(self, *, windows: int) -> None:
+        door = self.door
+        self.used = True
+        self.fraction = 0.0
+        mass = door._mass
+        if mass is not None:
+            clock = self.clock
+            if clock is None:
+                raise _refuse("a streamed root without a domain clock: the dry-mass share of the IAU window "
+                              "has no step interval to be measured on (G9b)")
+            # the tree runner's post-step model_seconds: the clock still holds the step's start
+            before = float(door._mass_last)
+            after = (clock.ticks + clock.step_ticks) / clock.tick_den
+            overlap = min(after, mass.end_seconds) - max(before, float(mass.start_seconds))
+            if overlap > 0 and mass.applied_fraction < 1.0:
+                self.fraction = min(overlap / float(mass.window_seconds), 1.0 - mass.applied_fraction)
+            self.after = after
+        if door._balance is not None:
+            import cupy as cp
+
+            if self.planes is None:
+                root = self.state
+                with cp.cuda.Device(root.mup.device.id):
+                    self.planes = {"p": cp.empty(root.mup.shape, dtype=root.p.dtype),
+                                   "mup": cp.empty(root.mup.shape, dtype=root.mup.dtype),
+                                   "thp": cp.empty(root.mup.shape, dtype=root.thp.dtype)}
+            # the probe read last step's planes on the current stream: the windows write them after
+            self._read_done = cp.cuda.Event(disable_timing=True)
+            self._read_done.record()
+            self.events = []
+
+    def after_window(self, tile, spec, window_id: int, *, stream=None) -> None:
+        door = self.door
+        if self.fraction > 0.0:
+            import cupy as cp
+
+            from gpuwm.da import iau
+
+            ty, tx = slice(spec.j0 - spec.cj0, spec.j1 - spec.cj0), slice(spec.i0 - spec.ci0, spec.i1 - spec.ci0)
+            door._mass.apply_window(
+                tile, self.fraction, lambda name, array: iau.window_of(cp, array, spec, iau.stagger_variant(name)),
+                domain_state=door._mass_state, interior=lambda mask: mask[..., ty, tx])
+        if self.planes is not None:
+            import cupy as cp
+
+            current = stream if stream is not None else cp.cuda.get_current_stream()
+            current.wait_event(self._read_done)
+            ty, tx = slice(spec.j0 - spec.cj0, spec.j1 - spec.cj0), slice(spec.i0 - spec.ci0, spec.i1 - spec.ci0)
+            fy, fx = slice(spec.j0, spec.j1), slice(spec.i0, spec.i1)
+            self.planes["p"][fy, fx] = tile.p[0][ty, tx]
+            self.planes["mup"][fy, fx] = tile.mup[ty, tx]
+            self.planes["thp"][fy, fx] = tile.thp[0][ty, tx]
+            event = cp.cuda.Event(disable_timing=True)
+            event.record(current)
+            self.events.append(event)
+
+    def finish_step(self) -> None:
+        door = self.door
+        if door._mass is not None:
+            door._mass.book(self.fraction)
+            door._mass_last = self.after
+        self.steps += 1
+
+
+class _PlaneSurface:
+    """The streamed root's lowest-level planes, as the balance probe reads a
+    state (:meth:`gpuwm.da.maspt.MasptRecorder._surface`): ``p[0]``,
+    ``mup``, ``thp[0]`` from the window interiors of the last sweep
+    (:class:`_StreamedDoorSteps`), ``thb`` the domain's base state."""
+
+    def __init__(self, steps: _StreamedDoorSteps, thb):
+        self._steps = steps
+        self.thb = thb
+
+    def _planes(self):
+        import cupy as cp
+
+        stream = cp.cuda.get_current_stream()
+        for event in self._steps.events:
+            stream.wait_event(event)
+        return self._steps.planes
+
+    @property
+    def p(self):
+        return self._planes()["p"][None]
+
+    @property
+    def mup(self):
+        return self._planes()["mup"]
+
+    @property
+    def thp(self):
+        return self._planes()["thp"][None]
+
+
 class AnalysisInitialization:
     """The WRF-input door's initialization with the bundle's increment applied or forced.
 
@@ -692,6 +865,8 @@ class AnalysisInitialization:
         self._window = None
         self._balance = None
         self._observe = None
+        self._observe_streamed = None
+        self._streamed = None
         self._root_grid = None
 
     def __getattr__(self, name):
@@ -708,6 +883,43 @@ class AnalysisInitialization:
 
     def domain_metadata(self, bundle):
         return self._base.domain_metadata(bundle)
+
+    def device_terms(self) -> dict[str, int]:
+        """The card bytes this door holds beside the restored domain through its window, by name.
+
+        THE BREAKAGE THEY PREVENT.  The tree door prices a leg the card cannot hold resident as
+        the restored domain plus tiles in what it leaves
+        (:func:`gpuwm.prepared_domain_tree_forecast._external_door_streams`), before the door
+        acts.  The door then put its forcing and its dry-mass increment on the card, priced
+        nowhere, so the plan spent memory that was already gone: camp-us-20230710-r n5q15
+        10:00 mem003 at 13.10 GiB free planned 147x146 x12 tiles in 9.30 GiB and ran out of
+        card memory on its first step (DA-CYCLE-SPEED-2026-10-27/PROGRESS.log 20:16:02Z).
+
+        Each term is what :meth:`apply_door_plan` allocates and keeps for the leg, from the
+        split's own shapes: the IAU forcing at the state's float32
+        (:class:`gpuwm.da.iau.IauForcing`), the G9b dry-mass increment in float64
+        (:meth:`gpuwm.da.iau.IncrementalUpdate._upload`) and the balance probe's three surface
+        planes on the tiled road (:class:`_StreamedDoorSteps`).  An at-once insertion's words
+        are released once it is in, so they hold nothing through the steps.  A resume past the
+        window allocates none of it; the terms are the plan's, so it is priced as the leg that
+        does.
+        """
+        import math
+
+        options = self.plan.get("iau") or {}
+        forcing_plan = self.plan.get("forcing")
+        terms: dict[str, int] = {}
+        grid = (self.plan.get("bundle") or {}).get("grid") or {}
+        if grid.get("nx") and grid.get("ny"):
+            terms["balance probe planes"] = 3 * 4 * int(grid["nx"]) * int(grid["ny"])
+        if not options.get("on") or forcing_plan is None:
+            return terms
+        at_once, spread = split_shapes(forcing_plan)
+        if spread:
+            terms["IAU forcing (float32)"] = 4 * sum(math.prod(shape) for shape in spread.values())
+        if "MU" in at_once and mass_mode() == "spread" and set(at_once) <= {"MU", "PH"}:
+            terms["dry-mass increment (float64)"] = 8 * sum(math.prod(shape) for shape in at_once.values())
+        return terms
 
     # -- the door's acts ----------------------------------------------------
     def _first_application(self, restart: Path | None) -> tuple[bool, str]:
@@ -870,6 +1082,15 @@ class AnalysisInitialization:
                 self._receipt["mass"]["note"] = "the restart is past the window; the mass increment is in the state"
         self._balance.prime(state)
         self._observe = self._balance.observer(state, start_seconds=elapsed)
+        # The tiled road (a leg that does not fit the card resident streams through host memory):
+        # the root's DomainState is then the snapshot its store was filled from, and nothing
+        # integrates it, so the dry-mass share and the balance probe below act on the compute
+        # windows the sweep steps instead (gpuwm.da.iau.IauSweepLease).  A resident root never
+        # reads the attribute.
+        self._streamed = _StreamedDoorSteps(self, clock=getattr(root, "clock", None), state=state)
+        setattr(state, iau.IAU_AFTER_STEP_ATTRIBUTE, self._streamed)
+        self._observe_streamed = self._balance.observer(_PlaneSurface(self._streamed, state.thb),
+                                                        start_seconds=elapsed)
         _atomic_json(self.outdir / "forecast-start.json", {
             "schema": START_SCHEMA, "start": self.plan["start"], "valid_time": self.plan["valid_time"],
             "grid": self.plan["bundle"]["grid"]["id"],
@@ -920,7 +1141,10 @@ class AnalysisInitialization:
     def step_observer(self, *, grid_id, model_seconds, **_event) -> None:
         """The tree runner's per-step seam: the balance series of the root domain."""
 
-        if self._mass is not None and int(grid_id) == int(self._root_grid):
+        # A streamed root's sweep already put this step's dry-mass share into its compute windows
+        # and read its surface (_StreamedDoorSteps); the root's DomainState is not integrated.
+        streamed = self._streamed is not None and self._streamed.used
+        if self._mass is not None and int(grid_id) == int(self._root_grid) and not streamed:
             before, after = float(self._mass_last), float(model_seconds)
             self._mass_last = after
             overlap = min(after, self._mass.end_seconds) - max(before, float(self._mass.start_seconds))
@@ -930,12 +1154,17 @@ class AnalysisInitialization:
                                               1.0 - self._mass.applied_fraction))
                 self._mass.steps += 1
         if self._observe is not None and int(grid_id) == int(self._root_grid):
-            self._observe(float(model_seconds))
+            (self._observe_streamed if streamed else self._observe)(float(model_seconds))
 
     def run_report_blocks(self, model) -> dict[str, Any]:
         """The receipt's ``analysis_bundle`` block; refuses a window the run left unfinished."""
 
         receipt = dict(self._receipt)
+        if self._streamed is not None and self._streamed.used:
+            receipt["road"] = {"root": "tiles", "domain_steps": int(self._streamed.steps),
+                               "rule": ("the forcing folded per compute window, the dry-mass share added to "
+                                        "each window after its step, the balance read from the window "
+                                        "interiors (gpuwm.da.iau.IauSweepLease)")}
         if self._balance is not None:
             receipt["balance"] = self._balance.receipt()
         if self._mass is not None:
@@ -988,6 +1217,8 @@ class AnalysisInitialization:
                               "one window")
             iau.detach(state)
             receipt["retired_at_seconds"] = float(state.elapsed_seconds)
+        if vars(state).get(iau.IAU_AFTER_STEP_ATTRIBUTE) is self._streamed and self._streamed is not None:
+            delattr(state, iau.IAU_AFTER_STEP_ATTRIBUTE)
         return receipt
 
 

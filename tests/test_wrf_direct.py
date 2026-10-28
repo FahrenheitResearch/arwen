@@ -420,6 +420,7 @@ def test_number_moment_wrfinput_contract_writes_arbitrary_vertical_shape(
 def _export_a_real_prepared_cache(tmp_path, mp_physics, numbers=None,
                                   *, boundary_scalars=None,
                                   replace_start=None, intervals=1, surface_override=None,
+                                  zones=(5, 1, 4), cells=12,
                                   **run_overrides):
     """A real CPU cold start through the prepared cache and the export.
 
@@ -435,7 +436,9 @@ def _export_a_real_prepared_cache(tmp_path, mp_physics, numbers=None,
     ``replace_start`` edits the start state in place AFTER the boundary
     was built from it, which is what a separate initial analysis
     (``--initial-inputs``) does to a prepared cache.  ``intervals`` is
-    the number of hourly boundary intervals.
+    the number of hourly boundary intervals.  ``zones`` is
+    ``(spec_bdy_width, spec_zone, relax_zone)`` and ``cells`` the square
+    domain's mass points per side.
     """
     import dataclasses
 
@@ -446,7 +449,8 @@ def _export_a_real_prepared_cache(tmp_path, mp_physics, numbers=None,
         attach_lateral_boundaries, build_state_lateral_boundaries)
     from gpuwm.ingest.prepared_cache import write_prepared_cache
 
-    ny, nx = 12, 12
+    ny, nx = cells, cells
+    spec_bdy_width, spec_zone, relax_zone = zones
     valid_time = datetime(2026, 7, 20, 6)
     # A specified mp=28 domain otherwise refuses without WRF's WIF
     # climatology file; the aerosol source is not what is under test.
@@ -455,8 +459,8 @@ def _export_a_real_prepared_cache(tmp_path, mp_physics, numbers=None,
     run.update(run_overrides)
     result, cfg = _analyzed_hrrr_real_init(
         mp_physics, shape=(ny, nx), map_proj=1, hypsometric_opt=2,
-        specified=True, nested=False, spec_bdy_width=5, spec_zone=1,
-        relax_zone=4, **run, **aerosol)
+        specified=True, nested=False, spec_bdy_width=spec_bdy_width,
+        spec_zone=spec_zone, relax_zone=relax_zone, **run, **aerosol)
     state = result.state
     seeded = {}
     for wrf_name, state_name in (numbers or {}).items():
@@ -478,7 +482,8 @@ def _export_a_real_prepared_cache(tmp_path, mp_physics, numbers=None,
         [state] * (intervals + 1),
         tuple(valid_time + timedelta(hours=hour)
               for hour in range(intervals + 1)),
-        spec_bdy_width=5, spec_zone=1, relax_zone=4)
+        spec_bdy_width=spec_bdy_width, spec_zone=spec_zone,
+        relax_zone=relax_zone)
     attach_lateral_boundaries(state, boundaries)
     if replace_start is not None:
         replace_start(state)
@@ -694,6 +699,56 @@ def test_the_export_holds_one_theta_representation_and_says_which(tmp_path):
                         > 1.0e3 * bound), suffix
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["use_theta_m"] == EXPORT_USE_THETA_M
+
+
+def test_an_hrrr_width_boundary_exports_its_own_ten_row_wrfbdy(tmp_path):
+    """U-E6: spec_bdy_width = 10 (the HRRR recipe's 1 + 9) exports.
+
+    The exporter required spec_bdy_width = 5, the frozen v4.6.1 file's
+    bdy_width, so every HRRR-recipe preparation had its companion
+    wrfinput/wrfbdy refused ("unsupported direct-export configuration:
+    {'spec_bdy_width': (10, 5)}").  The real CPU route here (cold start,
+    prepared cache, export) writes a 10-row wrfbdy whose strips are the
+    prepared tables' and which the real WRF-input reader takes back.
+    """
+    from gpuwm.ingest.wrfinput import read_wrfinput, read_wrfbdy
+
+    output, cfg, _ = _export_a_real_prepared_cache(
+        tmp_path, 6, zones=(10, 1, 9), cells=28)
+    assert cfg.spec_bdy_width == 10
+    with netCDF4.Dataset(output / "wrfbdy_d01") as boundary:
+        assert boundary.dimensions["bdy_width"].size == 10
+        for suffix in ("XS", "XE", "YS", "YE"):
+            assert boundary.variables[f"T_B{suffix}"].shape[1] == 10
+            assert np.isfinite(np.asarray(
+                boundary.variables[f"T_B{suffix}"][0])).all()
+    dims = dict(west_east=cfg.nx, west_east_stag=cfg.nx + 1,
+                south_north=cfg.ny, south_north_stag=cfg.ny + 1,
+                bottom_top=cfg.nz, bottom_top_stag=cfg.nz + 1,
+                soil_layers_stag=4)
+    restored = read_wrfinput(output / "wrfinput_d01", cfg=cfg,
+                             expected_dimensions=dims, require_complete=False)
+    read_back = read_wrfbdy(output / "wrfbdy_d01", restored=restored,
+                            run_seconds=3600, forcing_interval_seconds=3600,
+                            spec_bdy_width=cfg.spec_bdy_width, cfg=cfg)
+    assert len(read_back.intervals) == 1
+
+
+def test_the_export_refuses_a_boundary_narrower_than_its_zones(tmp_path):
+    """The width is free, the zones still have to fit in it."""
+
+    cache = _minimal_prepared_cache(tmp_path / "prepared", {
+        "mp_physics": 6, "hybrid_opt": 2, "hypsometric_opt": 2,
+        "specified": True, "nested": False, "spec_bdy_width": 8,
+        "spec_zone": 1, "relax_zone": 9,
+        "bl_pbl_physics": 1, "sf_sfclay_physics": 91, "sf_surface_physics": 2,
+    })
+    with pytest.raises(StockWrfExportUnsupported) as refusal:
+        export_prepared_wrf(
+            cache, tmp_path / "static.npz", tmp_path / "geometry.json",
+            tmp_path / "wrf-native-input",
+            valid_time=datetime(2026, 7, 29, 6))
+    assert set(refusal.value.unsupported) == {"spec_bdy_width"}
 
 
 def test_dry_export_roundtrips_through_the_real_wrf_input_reader(tmp_path):

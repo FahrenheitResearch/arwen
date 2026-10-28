@@ -79,7 +79,10 @@ def test_bare_source_recipe_and_generated_namelist_select_albedo(tmp_path, capsy
     # Every bare HRRR alias selects the same declared source composition.
     bare_gsd = not explicit_mp8
     expected_mp = 28 if bare_gsd else 8
-    expected_mynn = "gsd_41" if bare_gsd else "wrf_461"
+    # The HRRR source fills its gsd_41 MYNN generation on every radiation
+    # coupling since U-E4 put the fork's QC_BL x CLDFRA_BL merge in all of
+    # them; before it, an RTE+RRTMGP profile kept wrf_461.
+    expected_mynn = "gsd_41"
     expected_radiation = "rrtmg_legacy" if bare_gsd else "rte-rrtmgp"
     assert all(domain.run.mp_physics == expected_mp for domain in exp.domains)
     assert all(domain.run.bl_mynn_version == expected_mynn for domain in exp.domains)

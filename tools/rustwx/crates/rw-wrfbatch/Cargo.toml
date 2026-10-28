@@ -37,6 +37,12 @@ path = "src/main.rs"
 name = "rw_ensbatch"
 path = "src/launcher.rs"
 
+# A precomputed probability (a post-processed ML severe probability) on a fixed ladder: not a model field, so the
+# stored-variable lane could only draw it on an auto-ranged ramp.
+[[bin]]
+name = "rw_probgrid"
+path = "src/bin/probgrid.rs"
+
 [[bin]]
 name = "rw_obsgrid"
 path = "src/bin/obsgrid.rs"

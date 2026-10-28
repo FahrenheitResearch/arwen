@@ -1345,10 +1345,13 @@ def test_export_intent_reaches_mapped_preparation_and_stays_route_scoped(monkeyp
 
     args = _gfs_front_door_args(["--no-stock-wrf-export"])
     for validator in (source_cli._required_era5_args,
-                      source_cli._required_twentycr_args,
-                      source_cli._required_hrrr_args):
+                      source_cli._required_twentycr_args):
         errors = validator(args)
         assert any("--no-stock-wrf-export" in error for error in errors), validator.__name__
+    # U-E6: both HRRR preparers take the flag (gpuwm prep relays it), so the HRRR
+    # route no longer refuses it.
+    assert not any("--no-stock-wrf-export" in error
+                   for error in source_cli._required_hrrr_args(args))
 
     class ReachedPreparation(Exception):
         pass

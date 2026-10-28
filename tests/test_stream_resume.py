@@ -450,3 +450,65 @@ def test_replay_metadata_never_hides_changed_scientific_data(tmp_path, monkeypat
         _nested_metadata_source(tmp_path, name="changed", workers=8, mutate=mutation)
     assert (prefix / "boundary-stream/head.json").read_bytes() == before
     old._stop_heartbeat(final="stopped")
+
+
+# ---------------------------------------------------------------------------
+# `gpuwm go --prepared-root PREFIX --restart` binds a restored prefix
+# ---------------------------------------------------------------------------
+# THE BREAKAGE (run_515470d250a1060a, 2026-10-26, GFS streamed 3 km, gpuwm
+# 2.9.7): a checkpoint taken while the boundaries streamed stores a forcing
+# prefix with no seal document, and resolve_bundle refused it as "carries
+# none of proof.json, receipt.json", so neither a same-box retry nor a spot
+# resume could continue the forecast.
+
+def test_go_binds_a_restored_prefix_at_its_pinned_head(tmp_path, monkeypatch):
+    from gpuwm import stage_cli
+    from gpuwm.ingest.stream_resume import _beat
+
+    writer, _original, prefix = _prefix(tmp_path)
+    _beat(prefix)                       # the live continuation's heartbeat
+    seen = {}
+    monkeypatch.setattr(stage_cli, "resolve_head_bundle",
+                        lambda root, sha: seen.update(root=root, sha=sha) or {"layout": "single"})
+    assert stage_cli.resolve_bundle(prefix) == {"layout": "single"}
+    descriptor, _head = verify_prefix(prefix)
+    assert seen == {"root": prefix, "sha": descriptor["head_sha256"]}
+    writer._stop_heartbeat(final="stopped")
+
+
+def test_a_restored_prefix_no_continuation_is_finishing_still_refuses(tmp_path):
+    from gpuwm import stage_cli
+
+    writer, _original, prefix = _prefix(tmp_path)
+    with pytest.raises(stage_cli.StageRefusal, match="will never be sealed"):
+        stage_cli.resolve_bundle(prefix)
+    writer._stop_heartbeat(final="stopped")
+
+
+def test_a_restored_prefix_whose_bytes_changed_refuses(tmp_path):
+    from gpuwm import stage_cli
+    from gpuwm.ingest.stream_resume import _beat
+
+    writer, _original, prefix = _prefix(tmp_path)
+    _beat(prefix)
+    descriptor, _head = verify_prefix(prefix)
+    name = next(name for name in descriptor["files"] if name.startswith("prepared-cache/"))
+    target = prefix / name
+    target.write_bytes(target.read_bytes() + b"\0")
+    with pytest.raises(stage_cli.StageRefusal, match="does not verify"):
+        stage_cli.resolve_bundle(prefix)
+    writer._stop_heartbeat(final="stopped")
+
+
+def test_the_prefix_leaves_the_seal_written_wrf_export_to_the_seal(tmp_path):
+    # Found on the same resume: a prefix cut after the companion export was
+    # written carried a manifest bound to the original seal's cache header,
+    # and the continuation's own seal refused to replace it.
+    writer, original = _chained_tree(tmp_path, _snapshots(), name="original", stop_after=0)
+    export = original / "wrf-native-input"
+    export.mkdir()
+    (export / "manifest.json").write_text('{"prepared_header_sha256": "original"}')
+    descriptor = seal_prefix(original, 60, tmp_path / "prefix")
+    assert not (tmp_path / "prefix" / "wrf-native-input").exists()
+    assert not any(name.startswith("wrf-native-input/") for name in descriptor["files"])
+    writer._stop_heartbeat(final="stopped")

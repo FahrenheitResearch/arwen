@@ -1909,3 +1909,12 @@ headers, typed attributes (including a one-byte NUL), NC_STRING and payloads.
 Dataset variable-length string reads parse each global heap once and decode
 reach labels with Rayon, avoiding quadratic reparsing of a collection per label.
 A 65,540-distinct-label hydro test spans multiple global heap collections.
+
+
+## Optional physical colour boundaries (TC evidence, 2026-10-23)
+
+Original addition in `crates/rustwx-render/src/theme.rs`: `colormaps.levels`
+accepts finite, strictly increasing per-product boundaries in displayed units.
+This lets a hurricane wind sequence use one uncapped legend instead of the
+stock 60 kt endpoint. Unnamed products and themes without this key retain the
+existing rendering path. No third-party source was introduced.

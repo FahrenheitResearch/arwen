@@ -359,6 +359,9 @@ class _ChildProgress:
         self._live_products = None
         #: The any-point column store, written as frames land (:mod:`gpuwm.live_columns`).
         self._columns = None
+        #: Which of the child's frames carry the 3-D state, from its own [output]
+        #: (:class:`gpuwm.live_columns.StateFrames`); ``None`` takes every frame.
+        self.columns_frames = None
         #: How far the forecast got, from the last progress sample that
         #: carried a step number.  ``None`` until the first one, which
         #: is the state a child refused before its first step is in --
@@ -676,7 +679,8 @@ class _ChildProgress:
                 from gpuwm.live_columns import LiveColumns, columns_enabled
                 if not columns_enabled():
                     return
-                self._columns = LiveColumns(Path(self.outdir) / "columns", warn=self.warn)
+                self._columns = LiveColumns(Path(self.outdir) / "columns", warn=self.warn,
+                                            frames=self.columns_frames)
             if self._columns is not None:
                 self._columns.frame_committed(domain=int(fields["domain"]), valid_time=fields["valid_time"],
                                               path=fields["path"])
@@ -2331,10 +2335,23 @@ def _output_fields(state, initial, refl_field=None,
 def _write_frame(path: Path, state, cfg, initial, valid_time,
                  projection_attrs: dict[str, object], placement,
                  refl_field=None, surface=None,
-                 history_selection=None, simulation_start=None) -> None:
+                 history_selection=None, simulation_start=None,
+                 history_parent_start=None) -> None:
     from gpuwm.io.wrfout import WrfoutWriter
 
     attrs = dict(projection_attrs)
+    # A segment of a moving step-down (gpuwm.moving_downscale) writes the
+    # history of ONE moving nest: the forecast's start, and the segment's
+    # place on its parent's lattice rather than in the cropped window it
+    # was run in.  Written as the window place and the segment's own start,
+    # every segment read to the renderer as a separate run, so no window
+    # that spans a segment start (1 h rain, the 1 h maxima) was drawn on
+    # the moving 1 km and 333 m grids of a WOOF setup-following run at any
+    # hour (production run_54ce6aa98bdfdfe9, 2026-10-27).
+    start = simulation_start or initial.valid_time
+    i_start, j_start = (
+        (placement.i_parent_start, placement.j_parent_start)
+        if history_parent_start is None else history_parent_start)
     if surface is not None:
         # The land-use table identity, forwarded from the child's own
         # surface source.  read_child_surface_state requires these four as
@@ -2354,19 +2371,19 @@ def _write_frame(path: Path, state, cfg, initial, valid_time,
     attrs.update({
         "GRID_ID": np.int32(cfg.grid_id),
         "PARENT_ID": np.int32(0),
-        "I_PARENT_START": np.int32(placement.i_parent_start),
-        "J_PARENT_START": np.int32(placement.j_parent_start),
+        "I_PARENT_START": np.int32(i_start),
+        "J_PARENT_START": np.int32(j_start),
         "PARENT_GRID_RATIO": np.int32(placement.parent_grid_ratio),
         "DT": np.float32(cfg.dt),
         "HYBRID_OPT": np.int32(cfg.hybrid_opt),
         "ETAC": np.float32(cfg.etac),
-        "START_DATE": initial.valid_time.strftime("%Y-%m-%d_%H:%M:%S"),
-        # WRF's two facts: START_DATE is this file's own start, and
-        # SIMULATION_START_DATE the forecast's.  They differ on a segment of
-        # a moving step-down, which continues a forecast begun earlier (its
-        # maps are labelled from that start, as a restart's are).
-        "SIMULATION_START_DATE": (simulation_start or initial.valid_time
-                                  ).strftime("%Y-%m-%d_%H:%M:%S"),
+        # One forecast, one start: a moving step-down's segments continue
+        # the forecast begun at the child's start the way a moving nest
+        # continues across its moves, so START_DATE (which XTIME counts
+        # from) is that start on every segment too, as in a moving nest's
+        # history.
+        "START_DATE": start.strftime("%Y-%m-%d_%H:%M:%S"),
+        "SIMULATION_START_DATE": start.strftime("%Y-%m-%d_%H:%M:%S"),
         "GPUWM_OFFLINE_CHILD": np.int32(1),
     })
     frame = _output_fields(state, initial, refl_field=refl_field,
@@ -3118,6 +3135,8 @@ def _run(args: argparse.Namespace,
     history_selection = load_history_selection(args.child_config)
     history_selection.warn_lost_products(
         HISTORY_VOCABULARY, where=f"child d{cfg.grid_id:02d}")
+    from gpuwm.live_columns import StateFrames
+    progress.columns_frames = StateFrames.for_selection(history_selection)
     require_offline_child_root_forcing(cfg)
     # WHICH GEOGRAPHY the child is built on, resolved at admission through
     # the one function plan review resolved it with, so the two doors
@@ -3543,7 +3562,9 @@ def _run(args: argparse.Namespace,
         _write_frame(path, child, cfg, initial, valid,
                      projection_attrs, placement, refl_field=refl,
                      surface=surface, history_selection=history_selection,
-                     simulation_start=getattr(args, "simulation_start", None))
+                     simulation_start=getattr(args, "simulation_start", None),
+                     history_parent_start=getattr(args, "history_parent_start",
+                                                  None))
         output_paths.append(path)
         # History-interval reset of the UP_HELI_MAX window (no-op unless
         # the child config enables nwp_diagnostics; the synchronous

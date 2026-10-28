@@ -64,6 +64,7 @@ from gpuwm.ingest.horiz import (HorizontalSnapshot,
 from gpuwm.ingest.hrrr import (HrrrNativeSnapshot,
                                interpolate_hrrr_to_lambert)
 from gpuwm.ingest.real import RealInitResult, initialize_real
+from gpuwm.ingest.land_state import land_state_context
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.ingest.soil import (NoahSoilState, reconciler_soil_temperature,
                                reconciler_sst, soil_source_orography)
@@ -1506,6 +1507,10 @@ def finalize_prepared_child(
         # its parent's was, onto a grid where one source cell is even
         # wider in model cells.
         soil_mesh=prepared.soil_mesh,
+        # The child's own source column, so it takes the same-model donor
+        # its root takes (gpuwm/ingest/land_state.py).
+        land_state=land_state_context(
+            grid, getattr(horizontal, "valid_time", None)),
         route=_WATER_ROUTE)
     save_mub = state.mub2d.copy()
 

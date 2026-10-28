@@ -81,6 +81,44 @@ def test_the_door_and_table_hashers_use_the_digest_memo(tmp_path):
     assert wrfinput_forecast._sha(path) == want
     assert thompson_contract._sha256_file(path) == want
     assert restart._asset_sha256(path) == want
+    # The analysis door and the bundle reader: a member leg's bundle, derived files and checkpoint
+    # were hashed 4-6 times per leg on one core (2026-10-27).
+    from gpuwm.da import analysis_door
+    from gpuwm.io import analysis_bundle
+    assert analysis_door._sha(path) == want
+    assert analysis_bundle.sha256_file(path) == want
+
+
+def test_a_prefetched_digest_is_the_one_a_later_call_returns_without_hashing_again(tmp_path):
+    import hashlib
+
+    from gpuwm import file_digest
+
+    file_digest.forget()
+    path = tmp_path / "checkpoint.npz"
+    path.write_bytes(os.urandom(1 << 20))
+    want = hashlib.sha256(path.read_bytes()).hexdigest()
+    file_digest.prefetch(path)
+    calls = []
+    real = file_digest._hash
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    file_digest._hash = counting
+    try:
+        assert file_digest.sha256_file(path) == want
+        assert not calls, "a prefetched file was hashed again by its caller"
+    finally:
+        file_digest._hash = real
+    # A file changed after its prefetch is hashed again by whoever asks.
+    time.sleep(0.01)
+    with open(path, "r+b") as handle:
+        handle.write(b"\0" * 16)
+    assert file_digest.sha256_file(path) == hashlib.sha256(path.read_bytes()).hexdigest()
+    # An unreadable path is left to the caller, which meets the error.
+    file_digest.prefetch(tmp_path / "absent")
 
 
 # -- checkpoint selection -------------------------------------------------------

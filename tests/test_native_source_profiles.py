@@ -108,7 +108,10 @@ def test_native_analysis_binds_complete_soil_from_same_cycle_pressure_product():
     assert mapping["target"]["require_lateral_boundaries"] is False
     contract = load_composition(authority["composition"], authority["mapping"])
     binding = contract["field_sources"]["soil_surface"]
-    assert binding["time_alignment"] == "source_cycle_analysis_broadcast"
+    # The soil column is the run's own state at the forecast's first valid
+    # time: the analysis for a forecast from its cycle, the f03 record for a
+    # time-lagged member started three hours in.
+    assert binding["time_alignment"] == "source_cycle_window_start_broadcast"
     assert set(binding["fields"]) == {
         "terrain_height", "soil_temperature", "volumetric_soil_moisture"}
     for name in binding["fields"]:

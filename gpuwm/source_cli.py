@@ -936,7 +936,12 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
         "--grib2-dump": args.grib2_dump,
         "--hierarchy-workers": args.hierarchy_workers,
         "--mapped-engine": args.mapped_engine,
-        "--no-stock-wrf-export": args.no_stock_wrf_export or None,
+        # NOT here any more: --no-stock-wrf-export (U-E6).  Both HRRR
+        # preparers take it (tools/prepare_hrrr_wrf.py spells it
+        # --skip-stock-wrf-export; the hierarchy stage spells it as
+        # here), and _hrrr_command relays it.  Refusing it left the
+        # single-domain route, whose requested export is fail-closed, no
+        # way through `gpuwm prep` to a forecast-only preparation.
         "--statics-corridor": args.statics_corridor,
     }
     try:
@@ -1925,6 +1930,8 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
         if args.cpu_preprocess_bridge is not None:
             command.extend(("--cpu-preprocess-bridge", str(args.cpu_preprocess_bridge)))
         _append_statics_corridor_option(command, args)
+        if args.no_stock_wrf_export:
+            command.append("--no-stock-wrf-export")
         return command
 
     tools = Path(__file__).resolve().parent.parent / "tools"
@@ -1984,6 +1991,8 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
     for flag, path in physical_options:
         if path is not None:
             command.extend((flag, str(path)))
+    if args.no_stock_wrf_export:
+        command.append("--skip-stock-wrf-export")
     return command
 
 

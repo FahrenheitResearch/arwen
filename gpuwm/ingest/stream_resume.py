@@ -30,6 +30,13 @@ SOURCE_SCHEMA = "gpuwm-forcing-continuation-source-v1"
 DESCRIPTOR_NAME = "continuation.json"
 POSTED_PREFIX_DIRNAME = "posted-prefix"
 CONTINUATION_ENV = "GPUWM_CONTINUATION_PREFIX"
+#: A restored prefix is runnable: ``gpuwm go --prepared-root PREFIX
+#: --restart`` binds it at its pinned head (stage_cli.resolve_bundle) and its
+#: continuation re-prepares an identical head.  Callers that store prefixes
+#: for a resume (the WOOF worker's checkpoint inputs) read this marker:
+#: before it (gpuwm <= 2.9.8, run_515470d250a1060a) a stored prefix could
+#: never be resumed, so they store sealed inputs only.
+PREFIX_BINDS_AT_HEAD = True
 PRODUCER_LOCK_ENV = "GPUWM_CONTINUATION_PRODUCER_LOCK_FILE"
 
 
@@ -167,9 +174,17 @@ def seal_prefix(prepared_root, checkpoint_seconds, output_root, *, source=None,
     cache_dir = _relative(cache["directory"])
     # The root cache's array table is authoritative. A writer may have
     # already allocated later array files, which must not enter the prefix.
+    # The companion WRF export is written at the seal, from the seal's own
+    # cache header.  A prefix cut after it was written but before the seal
+    # document carried a manifest bound to the ORIGINAL header, which the
+    # prefix never holds; the continuation's seal writes a fresh header and
+    # export, so its copy refused as "continuation changes an immutable
+    # prefix file: wrf-native-input/manifest.json" (found 2026-10-26 on the
+    # run_515470d250a1060a resume repro).  The seal is the export's author.
+    from gpuwm.native_domain_artifacts import WRF_EXPORT_DIRNAME
     excluded = {stream.STREAM_DIRNAME, stream.SEALED_HIERARCHY_DIRNAME,
                 stream.proof_document_name(head), "public-wrapper-result.json",
-                DESCRIPTOR_NAME}
+                DESCRIPTOR_NAME, WRF_EXPORT_DIRNAME}
     inventory = {}
     for path in sorted(root.rglob("*")):
         if not path.is_file():

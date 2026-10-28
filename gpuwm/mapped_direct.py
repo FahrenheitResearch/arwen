@@ -78,6 +78,7 @@ from gpuwm.ingest.source_coverage import (
     existing_output_root_refusal,
     owns_source_coverage_refusal,
 )
+from gpuwm.ingest.land_state import land_state_context
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.ingest.water_temperature import WaterTemperatureStatics
 from gpuwm.mapped_composition import (
@@ -2613,6 +2614,9 @@ def prepare_mapped_wrf(
             soil_mesh=(initial_soil_mesh if initial_request is not None
                        else soil_mesh_plan_from_case(
                            snapshots[0], grid, experiment_config)),
+            # Where and when, for a same-model soil donor (gpuwm/ingest/
+            # land_state.py: HRRR's RUC soil for a RUC run over CONUS).
+            land_state=land_state_context(grid, times[0]),
             route=_WATER_ROUTE,
         )
         soil_temperature_repair = soil_temperature_repair_proof(soil, grid)

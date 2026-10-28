@@ -2887,6 +2887,7 @@ _CHECKED_ARTIFACTS = {
     "rw_ensbatch": "the `ensemble reducer` line",
     "rw_nowcast_frames": "the `nowcast frames converter` line",
     "rw_globe_pack": "the `global globe packer` line",
+    "rw_probgrid": "the `probability map renderer` line",
     "rw_scorecard": "the `observation scorecard` line",
     "rw_scoreboard": "the `forecast verification scorer` line",
     "arwen-tui": "the `terminal workspace` line",
@@ -4831,6 +4832,73 @@ def _globe_pack_check() -> Check:
                      f"-- {degrades}", remedy,
                      action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
                      brief="stale build; global statics build natively",
+                     group=_GROUP_ENGINES, blocking=False,
+                     severity=SEVERITY_DEGRADED)
+    return Check(name, "verified", f"{path} -- ABI {marker.decode()}",
+                 brief="staged", group=_GROUP_ENGINES)
+
+
+def _probgrid_check() -> Check:
+    """``rw_probgrid``, the fixed-ladder probability map renderer (2.9.9).
+
+    Draws a precomputed probability field (a post-processed severe
+    probability) on a fixed ladder through the production panel path,
+    judged by its ABI marker. Non-blocking and degraded when absent:
+    forecasts and every other map are untouched; only those probability
+    maps cannot be drawn.
+    """
+
+    name = "probability map renderer (rw_probgrid)"
+    filename = bridges.executable_name("rw_probgrid")
+    remedy = bridges.artifact_remedy(
+        env_var="GPUWM_RW_PROBGRID", filename=filename,
+        subject="the probability map renderer",
+        crate_relative=bridges.RUSTWX_CRATE_RELATIVE,
+        one_liner=bridges.rustwx_build_hint(), artifact="rw_probgrid")
+    degrades = "fixed-ladder probability maps are not drawn"
+    # Built in tools/rustwx like rw_globe_pack, so a checkout's
+    # tools/rustwx/target rung comes before the shared resolver.
+    try:
+        path = None
+        if not os.environ.get("GPUWM_RW_PROBGRID"):
+            for built in (rustwx.crate_dir() / "target" / "release" / filename,
+                          rustwx.crate_dir() / "target" / "debug" / filename):
+                if built.is_file():
+                    path = bridges.accept_resolved(built.resolve())
+                    break
+        if path is None:
+            path = bridges.find_artifact("GPUWM_RW_PROBGRID", filename)
+    except FileNotFoundError as error:
+        path, reason = None, str(error)
+    else:
+        reason = None if path is not None else f"{filename} is not staged"
+    if path is None:
+        if bridges.on_demand_fetch_offered("rw_probgrid"):
+            return Check(
+                name, "missing",
+                "not staged yet -- it is fetched on demand: the platform wheel does not carry it; "
+                "`gpuwm fetch-bridges --partial --artifact rw_probgrid` stages it from this release's bundle",
+                "gpuwm fetch-bridges --partial --artifact rw_probgrid",
+                action="gpuwm fetch-bridges --partial --artifact rw_probgrid",
+                brief="on demand; staged by gpuwm fetch-bridges",
+                group=_GROUP_ENGINES, blocking=False, severity=SEVERITY_OPT_IN)
+        return Check(name, "missing",
+                     f"{reason} -- {degrades}", remedy,
+                     action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+                     brief="not staged; probability maps are not drawn",
+                     group=_GROUP_ENGINES, blocking=False,
+                     severity=SEVERITY_DEGRADED)
+    marker = bridges.BRIDGE_ABI_MARKERS["rw_probgrid"]
+    try:
+        carries = marker in path.read_bytes()
+    except OSError as error:
+        carries, reason = False, f"unreadable ({error})"
+    if not carries:
+        return Check(name, "missing",
+                     f"{path} -- {reason or 'does not carry the ' + marker.decode() + ' contract'} "
+                     f"-- {degrades}", remedy,
+                     action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+                     brief="stale build; probability maps are not drawn",
                      group=_GROUP_ENGINES, blocking=False,
                      severity=SEVERITY_DEGRADED)
     return Check(name, "verified", f"{path} -- ABI {marker.decode()}",
@@ -7286,6 +7354,7 @@ def _collect_checks(sources: tuple[str, ...] | None = None,
     checks.extend(_hydro_proj_checks())
     checks.extend(_capability_tool_checks())
     checks.append(_globe_pack_check())
+    checks.append(_probgrid_check())
     checks.append(_radar_superob_check())
     checks.append(_region_dealias_check())
     checks.extend(_bridge_checks())

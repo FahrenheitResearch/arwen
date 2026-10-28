@@ -480,3 +480,35 @@ def test_the_receipt_statement_names_no_working_or_home_directory(tmp_path):
         extra.write(b"\0")
     b = resolve(tmp_path / "b", tmp_path / "home-b")
     assert portable_wif_statement(a) != portable_wif_statement(b)
+
+
+def test_one_decode_and_one_horizontal_interpolation_serve_every_forcing_time(tmp_path, monkeypatch):
+    """Breakage: a GFS preparation decoded the WIF file and interpolated all 12 months onto the
+    same grid once per forcing time (13x for a 36 h window, ~12 s of a 50 s preparation)."""
+    from gpuwm.ingest import wif_climatology as wif
+
+    path, _ = _synthetic_dat(tmp_path)
+    clim = load_wif_climatology(path, backend="numpy")
+    assert load_wif_climatology(path, backend="numpy") is clim
+    assert not clim.qnwfa.flags.writeable
+    calls = []
+    real = wif.four_pt_bilinear
+    monkeypatch.setattr(wif, "four_pt_bilinear", lambda *a: calls.append(1) or real(*a))
+    target_lat = np.array([[10.0, 10.0], [20.0, 20.0]])
+    target_lon = np.array([[-100.0, -90.0], [-100.0, -90.0]])
+    pd = np.stack([np.full((2, 2), 9.0e4), np.full((2, 2), 6.0e4),
+                   np.full((2, 2), 2.0e4)]).astype(np.float32)
+    phb = np.zeros((4, 2, 2), dtype=np.float32)
+    phb[1] = 9.81 * 50.0
+    dates = ("2026-08-25_18:00:00", "2026-08-25_21:00:00", "2026-09-02_00:00:00")
+    cached = [wif_fields_for_grid(clim, target_lat, target_lon, d, pd, phb, backend="numpy")[0]
+              for d in dates]
+    assert len(calls) == 3  # three species, once
+    for d, held in zip(dates, cached):
+        wif._HORIZONTAL.clear()  # each date against an uncached interpolation
+        fresh = wif_fields_for_grid(clim, target_lat, target_lon, d, pd, phb, backend="numpy")[0]
+        for name in fresh:
+            assert held[name].tobytes() == fresh[name].tobytes()
+    # Another grid is interpolated afresh.
+    wif_fields_for_grid(clim, target_lat + 1.0, target_lon, dates[0], pd, phb, backend="numpy")
+    assert len(calls) == 3 + 3 * len(dates) + 3

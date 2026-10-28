@@ -98,7 +98,7 @@ def test_single_checkpoint_releases_borrowed_store_before_publication_failure(
 
     publisher = single._CheckpointPublisher()
     if failure_phase == "submit":
-        monkeypatch.setattr(publisher, "submit", lambda job: fails())
+        monkeypatch.setattr(publisher, "submit", lambda job, **_: fails())
     writers = SimpleNamespace(
         durability_barrier=(fails if failure_phase == "capture" else lambda: fails),
         drain=fails)
@@ -129,6 +129,104 @@ def test_single_checkpoint_releases_borrowed_store_before_publication_failure(
     finally:
         pending.abandon()
         publisher.wait()
+
+
+def test_the_writer_never_retires_the_set_the_heartbeat_is_reading(
+        monkeypatch, tmp_path):
+    """Hourly checkpoints with ``--keep-checkpoints 1`` rotate cleanly.
+
+    Breakage (ml-probs T1, 2026-10-27, gpuwm 2.9.8): every 60 h GFS 12 km
+    parent with ``restart_interval_s = 3600`` died 3-7 h in with
+    FileNotFoundError on its own checkpoint (run dir held the 08Z set, the
+    run asked for the 07Z one).  The 08Z restart handler joins the 07Z
+    write, which hands ``model._last_checkpoint`` = 07Z to the period
+    commit; the supervisor heartbeat reads that set back in full on the
+    stepping thread while the writer thread publishes 08Z -- and the writer
+    retired 07Z under it.  Driven here through the door's own restart
+    handler, the real tree writer, the real publisher and the real
+    heartbeat, with the 08Z write held until the commit has named 07Z.
+    """
+    import ast
+    import contextlib
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from gpuwm import prepared_single_domain_forecast as single
+    from gpuwm.resume import KEEP_CHECKPOINTS_ENV, discover_checkpoint_sets
+    from gpuwm.supervisor import RuntimeHeartbeat
+
+    monkeypatch.setenv(KEEP_CHECKPOINTS_ENV, "1")
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3 * 3600.0, payload_seed=31,
+        run_overrides=_PINNED_UNDER_MEASURED_CLOCK)
+    gates = {}
+
+    def barrier():
+        gate = gates.setdefault(len(gates) + 1, threading.Event())
+        return gate.wait
+
+    publisher = single._CheckpointPublisher()
+    source_path = Path(single.__file__)
+    tree = ast.parse(source_path.read_text())
+    hook = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "restart_handler"
+        and any(isinstance(child, ast.Name) and child.id == "checkpoint_publisher"
+                for child in ast.walk(node)))
+    env = dict(
+        checkpoint_publisher=publisher,
+        writers=SimpleNamespace(durability_barrier=barrier, drain=lambda: None),
+        exp=SimpleNamespace(start_time=start, root=SimpleNamespace(grid_id=1),
+                            auto_epssm=()),
+        timedelta=timedelta, time=time, observer=None, outdir=tmp_path,
+        runtime=SimpleNamespace(
+            _writing_progress=lambda *a, **k: contextlib.nullcontext(),
+            _checkpoint_work_bytes=lambda tree: 1),
+        checkpoints=[], checkpoint_ticks={},
+        step_log=SimpleNamespace(restart_written=lambda **_: None), Path=Path)
+    exec(compile(ast.Module(body=[hook], type_ignores=[]), str(source_path),
+                 "exec"), env)
+    handler = env["restart_handler"]
+    heartbeat = RuntimeHeartbeat(
+        tmp_path / "heartbeat.json", run_id="rotation", config_sha256="0" * 64,
+        started_at_utc="2026-10-27T00:00:00Z")
+
+    def hours_on_disk():
+        return sorted(int(item.valid_time.hour)
+                      for item in discover_checkpoint_sets(tmp_path))
+
+    def join_writer():
+        thread = publisher._thread
+        if thread is not None:
+            thread.join(timeout=60)
+            assert not thread.is_alive()
+
+    try:
+        handler(source, 3600)
+        gates[1].set()
+        # The hour-2 handler joins the hour-1 write and submits hour 2,
+        # whose write waits on its history barrier.
+        handler(source, 7200)
+        named = source._last_checkpoint
+        assert named is not None and "_01_00_00__" in Path(named).name
+        # The hour-2 write lands while the period commit still names hour 1.
+        gates[2].set()
+        join_writer()
+        heartbeat(model_elapsed_seconds=7200.0, outer_step=2,
+                  last_durable_wrfout=None, last_checkpoint=named)
+        assert heartbeat.last_checkpoint == str(Path(named).resolve())
+        assert hours_on_disk() == [1, 2]
+        # Retention still holds: the next handler retires hour 1 on this
+        # thread, and the end-of-run wait leaves only the newest set.
+        handler(source, 10800)
+        assert hours_on_disk() == [2]
+        gates[3].set()
+        publisher.wait()
+        assert hours_on_disk() == [3]
+    finally:
+        for gate in gates.values():
+            gate.set()
+        join_writer()
 
 
 # -- the snapshot -------------------------------------------------------------

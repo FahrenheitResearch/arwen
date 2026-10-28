@@ -403,30 +403,270 @@ pub struct WrfGrid {
     pub nx: usize,
     pub ny: usize,
     pub nz: usize,
-    pub lat: Arc<[f64]>,
-    pub lon: Arc<[f64]>,
-    pub p: Arc<[f64]>,
-    pub z: Arc<[f64]>,
-    pub t: Arc<[f64]>,
-    pub td: Arc<[f64]>,
-    pub u: Arc<[f64]>,
-    pub v: Arc<[f64]>,
-    pub omega: Arc<[f64]>,
-    pub ps: Arc<[f64]>,
-    pub terrain: Arc<[f64]>,
-    pub t2: Arc<[f64]>,
-    pub q2: Arc<[f64]>,
-    pub u10: Arc<[f64]>,
-    pub v10: Arc<[f64]>,
+    pub lat: Vec<f64>,
+    pub lon: Vec<f64>,
+    pub p: Vec<f64>,
+    pub z: Vec<f64>,
+    pub t: Vec<f64>,
+    pub td: Vec<f64>,
+    pub u: Vec<f64>,
+    pub v: Vec<f64>,
+    pub omega: Vec<f64>,
+    pub ps: Vec<f64>,
+    pub terrain: Vec<f64>,
+    pub t2: Vec<f64>,
+    pub q2: Vec<f64>,
+    pub u10: Vec<f64>,
+    pub v10: Vec<f64>,
 }
 
-pub fn wrf_grid(f: &WrfFile, ti: usize) -> Res<WrfGrid> {
+/// The raw WRF variables of one history time, read in windows of (levels, rows, columns) in the file's own layout,
+/// every value promoted to f64 exactly as wrf-core's reader promotes it.
+enum Raw {
+    /// Classic, 64-bit-offset and CDF-5 files (ArWen wrfouts, hex exports): hyperslabs straight from the
+    /// memory-mapped file, so every window is read by the task that needs it, on its own core.
+    Classic { nc: NcFile, ti: usize },
+    /// NetCDF-4: each variable's whole time slice (read concurrently), then windowed.
+    Whole(std::collections::HashMap<&'static str, (Vec<f64>, Vec<usize>)>),
+}
+
+/// The 3-D and 2-D variables the grid needs.
+const GRID_VARS_3D: [&str; 9] = ["P", "PB", "T", "QVAPOR", "PH", "PHB", "W", "U", "V"];
+const GRID_VARS_2D: [&str; 10] = ["PSFC", "HGT", "T2", "Q2", "U10", "V10", "COSALPHA", "SINALPHA", "XLAT", "XLONG"];
+
+impl Raw {
+    fn open(f: &WrfFile, path: &std::path::Path, ti: usize) -> Res<Raw> {
+        match f.hdf5() {
+            PureRustFile::Classic(_) => Ok(Raw::Classic { nc: NcFile::open(path).map_err(err)?, ti }),
+            PureRustFile::Hdf5(_) => {
+                let whole = GRID_VARS_3D
+                    .par_iter()
+                    .chain(GRID_VARS_2D.par_iter())
+                    .map(|&name| {
+                        let shape = f.var_shape_no_time(name).map_err(err)?;
+                        Ok((name, (f.read_var(name, ti).map_err(err)?, shape)))
+                    })
+                    .collect::<Res<_>>()?;
+                Ok(Raw::Whole(whole))
+            }
+        }
+    }
+
+    /// Levels k0..k1 (ignored for a 2-D variable), rows j0..j1 and columns i0..i1 of `name` at this time, row-major.
+    /// The classic route makes wrf-core's own selection (the time index when the variable has a Time axis, then
+    /// every remaining axis) narrowed to the window, so each value converts identically.
+    fn window(&self, name: &str, (k0, k1): (usize, usize), (j0, j1): (usize, usize), (i0, i1): (usize, usize)) -> Res<Vec<f64>> {
+        use NcSliceInfoElem::{Index, Slice};
+        match self {
+            Raw::Classic { nc, ti } => {
+                let var = nc.variable(name).map_err(|e| format!("{name}: {e}"))?;
+                let shape = var.shape();
+                let has_time =
+                    shape.len() >= 2 && var.dimensions().first().is_some_and(|d| d.is_unlimited || d.name == "Time");
+                let mut selections = vec![];
+                if has_time {
+                    selections.push(Index(*ti as u64));
+                }
+                let rank = shape.len() - usize::from(has_time);
+                if rank == 3 {
+                    selections.push(Slice { start: k0 as u64, end: k1 as u64, step: 1 });
+                } else if rank != 2 {
+                    return Err(format!("{name} has {rank} spatial axes; a grid variable needs 2 or 3"));
+                }
+                selections.push(Slice { start: j0 as u64, end: j1 as u64, step: 1 });
+                selections.push(Slice { start: i0 as u64, end: i1 as u64, step: 1 });
+                let a = nc
+                    .read_variable_slice_as_f64(name, &NcSliceInfo { selections })
+                    .map_err(|e| format!("{name}: {e}"))?;
+                // The reader's own buffer when it is the window in order (always, for this read); else a copy.
+                let len = a.len();
+                Ok(if a.is_standard_layout() {
+                    let (v, offset) = a.into_raw_vec_and_offset();
+                    let o = offset.unwrap_or(0);
+                    if o == 0 && v.len() == len { v } else { v[o..o + len].to_vec() }
+                } else {
+                    a.iter().copied().collect()
+                })
+            }
+            Raw::Whole(whole) => {
+                let (data, shape) = whole.get(name).ok_or_else(|| format!("{name} was not read"))?;
+                let (nyv, nxv) = (shape[shape.len() - 2], shape[shape.len() - 1]);
+                let (k0, k1) = if shape.len() == 3 { (k0, k1) } else { (0, 1) };
+                let mut out = Vec::with_capacity((k1 - k0) * (j1 - j0) * (i1 - i0));
+                for k in k0..k1 {
+                    for j in j0..j1 {
+                        let row = (k * nyv + j) * nxv;
+                        out.extend_from_slice(&data[row + i0..row + i1]);
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+unsafe extern "C" {
+    fn madvise(addr: *mut std::ffi::c_void, len: usize, advice: i32) -> i32;
+}
+
+/// A zeroed f64 field whose pages the kernel may back with 2 MB pages (Linux transparent huge pages, in the
+/// "madvise" mode Ubuntu ships). A 1 km globe's grid is ~30 GB: at 4 KB pages its first touch and its free are ~8 M
+/// page faults and unmaps the kernel serialises, which held the parallel grid at ~30 cores and its free at one core
+/// for 5.6 s. The allocation is untouched until written (calloc maps zero pages), so the advice lands first.
+fn huge_zeroed(len: usize) -> Vec<f64> {
+    let v = vec![0.0f64; len];
+    #[cfg(target_os = "linux")]
+    if len * 8 >= 64 << 20 {
+        const PAGE: usize = 4096;
+        const MADV_HUGEPAGE: i32 = 14;
+        let start = (v.as_ptr() as usize).next_multiple_of(PAGE);
+        let end = (v.as_ptr() as usize + len * 8) & !(PAGE - 1);
+        if end > start {
+            // Advice only: a kernel without THP refuses it and the field stays on 4 KB pages.
+            unsafe { madvise(start as *mut std::ffi::c_void, end - start, MADV_HUGEPAGE) };
+        }
+    }
+    v
+}
+
+/// The grid of one history time, every level and row band on its own core: each task reads only its own window of
+/// the raw variables and evaluates wrf-core's whole-field expressions on it in the same order (P+PB;
+/// (T+300)*(p/P0)^kappa - 273.15; 0.5*(PH+PHB below + above)/g; 0.5*(U|V|W pair)), then omega, the earth rotation
+/// and the dewpoint exactly as before, so every value is bit for bit what the serial whole-field route gave
+/// (`tests::parallel_grid_is_bitwise_the_serial_one`). Classic files are read from the map by the tasks
+/// themselves; NetCDF-4 files are read whole, one variable per core, first. Runs in the caller's rayon pool.
+pub fn wrf_grid(f: &WrfFile, path: &std::path::Path, ti: usize) -> Res<WrfGrid> {
+    let (nx, ny, nz) = (f.nx, f.ny, f.nz);
+    if f.nx_stag != nx + 1 || f.ny_stag != ny + 1 || f.nz_stag != nz + 1 {
+        return Err(format!(
+            "{}: staggered axes U {} / V {} / PH {} do not fit the {nx}x{ny}x{nz} mass grid; the columns would misalign",
+            path.display(),
+            f.nx_stag,
+            f.ny_stag,
+            f.nz_stag
+        ));
+    }
+    let n = nx * ny;
+    let raw = Raw::open(f, path, ti)?;
+    let cols = (0, nx);
+    // The 2-D fields, one per core (each is a single plane).
+    let mut planes: std::collections::HashMap<&str, Vec<f64>> = GRID_VARS_2D
+        .par_iter()
+        .map(|&name| Ok((name, raw.window(name, (0, 1), (0, ny), cols)?)))
+        .collect::<Res<_>>()?;
+    let mut take = |name: &str| planes.remove(name).ok_or_else(|| format!("{name} was not read"));
+    let (ca, sa) = (take("COSALPHA")?, take("SINALPHA")?);
+    // Rotation must precede horizontal interpolation. WRF stores grid-relative winds.
+    let earth = |us: &[f64], vs: &[f64], out_u: &mut [f64], out_v: &mut [f64], at: usize| {
+        for (r, ((u, v), (eu, ev))) in us.iter().zip(vs).zip(out_u.iter_mut().zip(out_v.iter_mut())).enumerate() {
+            let i = at + r;
+            *eu = u * ca[i] - v * sa[i];
+            *ev = v * ca[i] + u * sa[i];
+        }
+    };
+    let (u10g, v10g) = (take("U10")?, take("V10")?);
+    let (mut u10, mut v10) = (vec![0.0; n], vec![0.0; n]);
+    earth(&u10g, &v10g, &mut u10, &mut v10, 0);
+    // Row bands: enough that every core has work when the levels are fewer than the cores, and small (~32 K points,
+    // 256 KB a window) so each task's windows reuse the allocator's warm memory instead of faulting in fresh pages:
+    // 8 MB windows held the 1 km globe's grid at ~23 cores.
+    let min_bands = (4 * rayon::current_num_threads()).div_ceil(nz.max(1)).clamp(1, ny);
+    let rows = (32_768 / nx).clamp(1, ny.div_ceil(min_bands));
+    let band = rows * nx;
+    let mut out: [Vec<f64>; 7] = std::array::from_fn(|_| huge_zeroed(nz * n));
+    let [p, z, t, td, u, v, omega] = &mut out;
+    let levels = (
+        p.par_chunks_mut(n),
+        z.par_chunks_mut(n),
+        t.par_chunks_mut(n),
+        td.par_chunks_mut(n),
+        u.par_chunks_mut(n),
+        v.par_chunks_mut(n),
+        omega.par_chunks_mut(n),
+    );
+    levels.into_par_iter().enumerate().try_for_each(|(k, (p, z, t, td, u, v, omega))| -> Res<()> {
+        let parts = (
+            p.par_chunks_mut(band),
+            z.par_chunks_mut(band),
+            t.par_chunks_mut(band),
+            td.par_chunks_mut(band),
+            u.par_chunks_mut(band),
+            v.par_chunks_mut(band),
+            omega.par_chunks_mut(band),
+        );
+        parts.into_par_iter().enumerate().try_for_each(|(b, (p, z, t, td, u, v, omega))| -> Res<()> {
+            let (j0, j1) = (b * rows, ((b + 1) * rows).min(ny));
+            let m = (j1 - j0) * nx;
+            let mass = |name: &str| raw.window(name, (k, k + 1), (j0, j1), cols);
+            let stag = |name: &str| raw.window(name, (k, k + 2), (j0, j1), cols);
+            let (pp, pb, th, qv) = (mass("P")?, mass("PB")?, mass("T")?, mass("QVAPOR")?);
+            let (ph, phb, ww) = (stag("PH")?, stag("PHB")?, stag("W")?);
+            let us = raw.window("U", (k, k + 1), (j0, j1), (0, nx + 1))?;
+            let vs = raw.window("V", (k, k + 1), (j0, j1 + 1), cols)?;
+            let mut ug = vec![0.0; m];
+            let mut vg = vec![0.0; m];
+            for r in 0..m {
+                // wrf-core, in its order: full_pressure; full_theta -> temperature -> temperature_c;
+                // full_geopotential (destagger_z) -> height_msl; w_destag; u_destag (destagger_x);
+                // v_destag (destagger_y).
+                let pr = pp[r] + pb[r];
+                let theta = th[r] + 300.0;
+                let tk = theta * (pr / P0).powf(KAPPA);
+                let tc = tk - 273.15;
+                let g_lo = ph[r] + phb[r];
+                let g_hi = ph[m + r] + phb[m + r];
+                let geopt = 0.5 * (g_lo + g_hi);
+                let wm = 0.5 * (ww[r] + ww[m + r]);
+                let (jj, i) = (r / nx, r % nx);
+                ug[r] = 0.5 * (us[jj * (nx + 1) + i] + us[jj * (nx + 1) + i + 1]);
+                vg[r] = 0.5 * (vs[jj * nx + i] + vs[(jj + 1) * nx + i]);
+                let q = qv[r];
+                p[r] = pr;
+                z[r] = geopt / G;
+                t[r] = tc;
+                // Hydrostatic conversion of WRF vertical velocity to pressure velocity (Pa/s).
+                omega[r] = -9.80665 * pr * wm / (287.05 * (tc + 273.15) * (1.0 + 0.61 * q));
+                // Derive Td on the grid before bilinear sampling, like the site store.
+                td[r] = dewpoint(pr, q);
+            }
+            earth(&ug, &vg, u, v, j0 * nx);
+            Ok(())
+        })
+    })?;
+    let [p, z, t, td, u, v, omega] = out;
+    Ok(WrfGrid {
+        nx,
+        ny,
+        nz,
+        lat: take("XLAT")?,
+        lon: take("XLONG")?,
+        p,
+        z,
+        t,
+        td,
+        u,
+        v,
+        omega,
+        ps: take("PSFC")?,
+        terrain: take("HGT")?,
+        t2: take("T2")?,
+        q2: take("Q2")?,
+        u10,
+        v10,
+    })
+}
+
+/// The serial whole-field route the parallel grid replaced (wrf-core's cached derived fields, then omega, the
+/// rotation and the dewpoint), kept as the referee of `tests::parallel_grid_is_bitwise_the_serial_one`.
+#[cfg(test)]
+pub(crate) fn wrf_grid_serial(f: &WrfFile, ti: usize) -> Res<WrfGrid> {
+    f.prepare_cache_for_time(ti);
     let p = f.full_pressure(ti).map_err(err)?;
     let z = f.height_msl(ti).map_err(err)?;
     let t = f.temperature_c(ti).map_err(err)?;
     let q = f.qvapor(ti).map_err(err)?;
     let w = f.w_destag(ti).map_err(err)?;
-    // Hydrostatic conversion of WRF vertical velocity to pressure velocity (Pa/s).
     let omega: Vec<f64> = p
         .iter()
         .zip(t.iter())
@@ -436,13 +676,6 @@ pub fn wrf_grid(f: &WrfFile, ti: usize) -> Res<WrfGrid> {
         .collect();
     let u = f.u_destag(ti).map_err(err)?;
     let v = f.v_destag(ti).map_err(err)?;
-    let ps = f.psfc(ti).map_err(err)?;
-    let terrain = f.terrain(ti).map_err(err)?;
-    let t2 = f.t2(ti).map_err(err)?;
-    let q2 = f.q2(ti).map_err(err)?;
-    let u10 = f.u10(ti).map_err(err)?;
-    let v10 = f.v10(ti).map_err(err)?;
-    // Rotation must precede horizontal interpolation. WRF stores grid-relative winds.
     let ca = f.cosalpha(ti).map_err(err)?;
     let sa = f.sinalpha(ti).map_err(err)?;
     let n = f.nxy();
@@ -454,32 +687,30 @@ pub fn wrf_grid(f: &WrfFile, ti: usize) -> Res<WrfGrid> {
             .unzip()
     };
     let (u, v) = earth(&u, &v);
-    let (u10, v10) = earth(&u10, &v10);
-    let td: Vec<f64> = p
-        .iter()
-        .zip(q.iter())
-        .map(|(p, q)| dewpoint(*p, *q))
-        .collect();
-    Ok(WrfGrid {
+    let (u10, v10) = earth(&f.u10(ti).map_err(err)?, &f.v10(ti).map_err(err)?);
+    let td: Vec<f64> = p.iter().zip(q.iter()).map(|(p, q)| dewpoint(*p, *q)).collect();
+    let g = WrfGrid {
         nx: f.nx,
         ny: f.ny,
         nz: f.nz,
-        lat: f.xlat(ti).map_err(err)?,
-        lon: f.xlong(ti).map_err(err)?,
-        p,
-        z,
-        t,
-        td: td.into(),
-        u: u.into(),
-        v: v.into(),
-        omega: omega.into(),
-        ps,
-        terrain,
-        t2,
-        q2,
-        u10: u10.into(),
-        v10: v10.into(),
-    })
+        lat: f.xlat(ti).map_err(err)?.to_vec(),
+        lon: f.xlong(ti).map_err(err)?.to_vec(),
+        p: p.to_vec(),
+        z: z.to_vec(),
+        t: t.to_vec(),
+        td,
+        u,
+        v,
+        omega,
+        ps: f.psfc(ti).map_err(err)?.to_vec(),
+        terrain: f.terrain(ti).map_err(err)?.to_vec(),
+        t2: f.t2(ti).map_err(err)?.to_vec(),
+        q2: f.q2(ti).map_err(err)?.to_vec(),
+        u10,
+        v10,
+    };
+    f.clear_cache();
+    Ok(g)
 }
 
 impl WrfGrid {

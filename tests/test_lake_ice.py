@@ -200,3 +200,26 @@ def test_the_gfs_policy_defaults_to_observed_and_keeps_wps(tmp_path):
 
     assert GFS_LAKE_ICE_CHOICES == lake_ice.LAKE_ICE_CHOICES
     assert gfs_preparation_policy(None)["gfs_lake_ice"] == "observed"
+
+
+def test_the_decision_receipt_carries_no_wall_time(monkeypatch, tmp_path):
+    """The receipt is bound into the prepared cache's source identity.
+
+    THE BREAKAGE (run_515470d250a1060a, 2026-10-26): it carried the
+    sampling wall time, so two preparations of the same inputs differed
+    (0.082 vs 0.08 s) and a checkpoint resume's forcing continuation
+    refused with "continuation changes its immutable prepared head cache".
+    """
+    source = lake_ice.load_lake_ice_sources()[0]
+    observation = lake_ice.ObservedLakeIce(
+        source=source, path=tmp_path / "ims.asc.gz", sha256="0" * 64,
+        valid_time=datetime(2026, 10, 25), url="https://example.invalid/ims")
+    monkeypatch.setattr(lake_ice, "sample_ims_codes", lambda path, lat, lon, *, radius: (
+        _counts(*[[0, 0, 0, 0, 0]] * len(lat)), np.zeros(len(lat), dtype=np.uint8),
+        {"backend": "test"}))
+    lat, lon = np.full((2, 3), 35.0), np.full((2, 3), -97.0)
+    mask = np.array([[True, False, True], [False, True, False]])
+    one = lake_ice.decide_lake_ice(observation, lat, lon, mask, dx_m=3000.0).receipt
+    two = lake_ice.decide_lake_ice(observation, lat, lon, mask, dx_m=3000.0).receipt
+    assert "seconds" not in one
+    assert one == two

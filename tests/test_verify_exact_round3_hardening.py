@@ -95,7 +95,7 @@ def test_scalar_consumer_refusal_has_a_named_valueerror_type():
     from gpuwm.config import validate_scalar_pblmix_consumer
     with pytest.raises(ValueError) as caught:
         validate_scalar_pblmix_consumer(SimpleNamespace(scalar_pblmix=1,
-                                                       bl_pbl_physics=5, mp_physics=6))
+                                                       bl_pbl_physics=5, mp_physics=30))
     assert type(caught.value).__name__ == "UnsupportedConfiguration"
     assert "exch_h" in str(caught.value)
     assert isinstance(caught.value, NotImplementedError)

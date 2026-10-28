@@ -77,7 +77,10 @@ are now closed for all of them.  The third entry is reused unchanged.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import struct
+import threading
 from dataclasses import dataclass, field as _field
 
 import numpy as np
@@ -295,14 +298,69 @@ def read_wps_intermediate_rust(path):
         raise WifClimatologyError("WPS intermediate file holds no records")
     return records, axes[0], axes[1], corner
 
+#: Decoded climatologies and their horizontal interpolations, per process.
+#: THE BREAKAGE: a GFS preparation decoded the same monthly WIF file and
+#: interpolated all 12 months of it onto the same grid once PER FORCING
+#: TIME (13 times for a 36 h 3-hourly window: about 12 s of a 50 s
+#: preparation, measured 2026-10-27).  The file and the grid do not
+#: change between forcing times; only the date weights and the vertical
+#: interpolation do.  The cached arrays are read-only, so a consumer that
+#: tried to write one fails loudly instead of changing a later time.
+_DECODED: dict = {}
+_HORIZONTAL: dict = {}
+_CACHE_ENTRIES = 2
+
+
+_CACHE_LOCK = threading.Lock()
+
+
+def _remember(cache: dict, key, value):
+    with _CACHE_LOCK:
+        cache.pop(key, None)
+        cache[key] = value
+        while len(cache) > _CACHE_ENTRIES:
+            cache.pop(next(iter(cache)))
+    return value
+
+
+def _frozen(array):
+    array = np.asarray(array)
+    array.setflags(write=False)
+    return array
+
+
 def load_wif_climatology(path, *, backend="rust") -> WifClimatology:
     """Assemble the (12, nlev, nlat, nlon) monthly stacks by field suffix.
 
     ``backend`` selects the DECODER only; the stacking below is metadata
     work on whatever the decoder returned and is identical either way.
+
+    Decoded once per process per file (path, size, mtime) and decoder
+    (:data:`_DECODED`); the arrays returned are read-only.
     """
 
-    if _resolve_backend(backend) == "rust":
+    engine = _resolve_backend(backend)
+    try:
+        stat = os.stat(path)
+        key = (os.path.realpath(path), stat.st_size, stat.st_mtime_ns, engine)
+    except (OSError, TypeError, ValueError):
+        key = None
+    if key is not None and key in _DECODED:
+        return _remember(_DECODED, key, _DECODED[key])
+    decoded = _decode_wif_climatology(path, engine)
+    climatology = WifClimatology(
+        qnwfa=_frozen(decoded.qnwfa), qnifa=_frozen(decoded.qnifa),
+        pressure=_frozen(decoded.pressure),
+        latitude=_frozen(decoded.latitude),
+        longitude=_frozen(decoded.longitude),
+        source_path=decoded.source_path, grid_corner=decoded.grid_corner)
+    if key is not None:
+        _remember(_DECODED, key, climatology)
+    return climatology
+
+
+def _decode_wif_climatology(path, engine) -> WifClimatology:
+    if engine == "rust":
         records, latitude, longitude, corner = read_wps_intermediate_rust(path)
     else:
         records, latitude, longitude = read_wps_intermediate(path)
@@ -630,25 +688,41 @@ def wif_fields_for_grid(climatology: WifClimatology, target_lat, target_lon,
     stages and their authorities.
     """
     engine = _resolve_backend(backend)
-    if engine == "rust":
+    # The 12 monthly levels interpolated onto this grid do not depend on the
+    # date: one climatology object on one grid is interpolated once
+    # (:data:`_HORIZONTAL`), keyed by the object and the grid's bytes.
+    target_lat_host = np.ascontiguousarray(target_lat)
+    target_lon_host = np.ascontiguousarray(target_lon)
+    horizontal_key = (
+        id(climatology), engine,
+        target_lat_host.dtype.str, target_lat_host.shape,
+        hashlib.sha256(target_lat_host.tobytes()).hexdigest(),
+        target_lon_host.dtype.str, target_lon_host.shape,
+        hashlib.sha256(target_lon_host.tobytes()).hexdigest())
+    held = _HORIZONTAL.get(horizontal_key)
+    if held is not None and held[0] is climatology:
+        horiz = _remember(_HORIZONTAL, horizontal_key, held)[1]
+    elif engine == "rust":
         startlat, deltalat, startlon, deltalon = \
             climatology.axis_parameters()
         horiz = {
-            name: four_pt_bilinear_rust(
+            name: _frozen(four_pt_bilinear_rust(
                 getattr(climatology, name), startlat, deltalat,
-                startlon, deltalon, target_lat, target_lon)
+                startlon, deltalon, target_lat, target_lon))
             for name in ("qnwfa", "qnifa", "pressure")
         }
-        vertical = vert_interp_wif_column_grid_rust
+        _remember(_HORIZONTAL, horizontal_key, (climatology, horiz))
     else:
         horiz = {
-            name: four_pt_bilinear(getattr(climatology, name),
-                                   climatology.latitude,
-                                   climatology.longitude,
-                                   target_lat, target_lon)
+            name: _frozen(four_pt_bilinear(getattr(climatology, name),
+                                           climatology.latitude,
+                                           climatology.longitude,
+                                           target_lat, target_lon))
             for name in ("qnwfa", "qnifa", "pressure")
         }
-        vertical = vert_interp_wif_column_grid
+        _remember(_HORIZONTAL, horizontal_key, (climatology, horiz))
+    vertical = (vert_interp_wif_column_grid_rust if engine == "rust"
+                else vert_interp_wif_column_grid)
     now = {name: monthly_interp_to_date(horiz[name], date_str)
            for name in horiz}
     p_now, (w_now, i_now) = orient_bottom_up(

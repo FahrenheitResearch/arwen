@@ -3317,6 +3317,32 @@ def _initialize_boundary_sides(
 _PREPARE_WORKER_CONTEXT = None
 
 
+def _exit_with_parent():
+    """End this spawned worker the moment its parent process dies.
+
+    Breakage it prevents (Updraft factory, Vast V8X, 2026-10-27): when the
+    preparation process was killed (cgroup OOM killer, a pool child barrier,
+    a restart), its boundary workers blocked forever on the executor's call
+    queue, because each worker holds a copy of that queue's write end, so no
+    EOF ever arrives.  Two such workers kept 866 MiB CUDA contexts each on a
+    card for 8.5 h, invisible to the card pool.  The parent sentinel is the
+    pipe multiprocessing gives every spawned child for exactly this; it reads
+    EOF only when the parent is gone.  No-op outside a spawned child.
+    """
+    import multiprocessing.connection
+    import threading
+
+    parent = multiprocessing.parent_process()
+    if parent is None or parent.sentinel is None:
+        return
+
+    def watch(sentinel=parent.sentinel):
+        multiprocessing.connection.wait([sentinel])
+        os._exit(70)
+
+    threading.Thread(target=watch, name="exit-with-parent", daemon=True).start()
+
+
 def _prepare_worker_init(
         run_cfg, static_sides, eta, p_top, width,
         preprocess_backend, cpu_preprocess_bridge, sfcp_to_sfcp=True,
@@ -3332,6 +3358,7 @@ def _prepare_worker_init(
     backend carries for the same reason.
     """
     global _PREPARE_WORKER_CONTEXT
+    _exit_with_parent()
     _PREPARE_WORKER_CONTEXT = (
         run_cfg, static_sides, tuple(float(value) for value in eta),
         float(p_top), int(width), preprocess_backend,

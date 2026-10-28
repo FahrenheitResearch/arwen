@@ -351,7 +351,7 @@
     "volumetric_soil_moisture"
    ],
    "grid_alignment": "exact_coordinate_subset",
-   "time_alignment": "source_cycle_analysis_broadcast"
+   "time_alignment": "source_cycle_window_start_broadcast"
   },
   "vegetation_surface": {
    "source_id": "noaa-hrrr-conus-surface-vegetation-grib2",

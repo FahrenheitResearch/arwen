@@ -63,3 +63,24 @@ def test_fixed_mass_single_warm_layer_has_analytic_thickness(tmp_path,option):
     np.testing.assert_allclose(actual[2:,2,3],expected,rtol=2e-12,atol=2e-10)
     zero,_=host.hydrostatic(state,before,before,hypsometric_opt=option)
     assert np.count_nonzero(zero)==0
+
+
+@pytest.mark.parametrize("option", [1,2])
+def test_column_blocks_on_threads_are_the_one_call_words(tmp_path,option,monkeypatch):
+    # single-core law (2026-10-27): the kernel integrates every column alone, so column blocks on threads give the
+    # one-call words, mass moving or not
+    state=ab.column_from_file(write_wrf_state(tmp_path/"state.nc"))
+    before=hydro.capture_column(state)
+    after=dict(before)
+    after["thp"]=before["thp"]+np.linspace(0.,0.5,before["thp"].size).reshape(before["thp"].shape)
+    after["qv"]=before["qv"]*1.01
+    mup=state.mup+np.linspace(-20.,20.,state.mup.size).reshape(state.mup.shape)
+    for mass in (None, mup):
+        monkeypatch.setenv("GPUWM_BUNDLE_THREADS","1")
+        one=host.hydrostatic(state,before,after,hypsometric_opt=option,mup_after=mass)
+        monkeypatch.setenv("GPUWM_BUNDLE_THREADS","3")
+        monkeypatch.setattr(host,"HYDRO_COLUMNS_PER_THREAD",1)
+        many=host.hydrostatic(state,before,after,hypsometric_opt=option,mup_after=mass)
+        monkeypatch.setattr(host,"HYDRO_COLUMNS_PER_THREAD",16384)
+        for a,b in zip(one,many):
+            assert a.tobytes()==b.tobytes()

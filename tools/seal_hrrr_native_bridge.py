@@ -156,9 +156,19 @@ def main():
     payloads = sorted(
         path for path in args.root.rglob("*")
         if path.is_file() and path != manifest)
+    # Hashed across threads (hashlib releases the GIL on large updates),
+    # lines kept in sorted path order, so SHA256SUMS is byte-identical to
+    # the serial pass.  Breakage it prevents: the serial pass hashed an
+    # ~11 GB 24 h bridge tree on ONE core for 100+ s inside every HRRR
+    # preparation (single-core sentinel, Vast V8X, 2026-10-27).
+    from concurrent.futures import ThreadPoolExecutor
+    workers = max(1, min(32, len(os.sched_getaffinity(0))
+                         if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        digests = list(pool.map(_sha256, payloads))
     lines = [
-        f"{_sha256(path)}  ./{path.relative_to(args.root).as_posix()}"
-        for path in payloads]
+        f"{digest}  ./{path.relative_to(args.root).as_posix()}"
+        for digest, path in zip(digests, payloads)]
     temporary = manifest.with_suffix(".tmp")
     temporary.write_text("\n".join(lines) + "\n")
     os.replace(temporary, manifest)

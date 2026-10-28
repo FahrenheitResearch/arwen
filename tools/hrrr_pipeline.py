@@ -202,8 +202,27 @@ _WORKER_RANGE_TEXT = (
     f"pipeline workers must be 1..{MAX_PIPELINE_WORKERS} or 'auto'")
 
 
+#: Operator override for the decoder's worker count, for a shared host.
+#: Breakage it prevents: on a shared 8-card box (Vast V8X, 2026-10-27) the
+#: HRRR decoder ran 8 workers at ~19-24 GB resident because ``gpuwm go``
+#: passes 8 explicitly; the kernel OOM killer took it 20+ times while other
+#: jobs held the memory, and every kill threw away a 4-10 min preparation.
+#: The value is any number the range accepts, or ``auto``; the receipt
+#: records that it came from the environment.
+PIPELINE_WORKERS_ENV = "GPUWM_PIPELINE_WORKERS"
+
+
 def resolve_workers(value: str) -> tuple[int, dict[str, object]]:
     capacity = cgroup_capacity()
+    override = os.environ.get(PIPELINE_WORKERS_ENV, "").strip()
+    # the receipt's "requested" stays the caller's own value: the preparation
+    # validator (prepare_hrrr_wrf._validated_worker_receipts) checks it against
+    # the count it passed, so an override that rewrote it failed every
+    # preparation after ~10 min with "HRRR decoder worker receipt is malformed"
+    # (Vast V8X 2026-10-27); the override is recorded beside it.
+    requested = str(value).strip().lower()
+    if override:
+        value = override
     text = str(value).strip().lower()
     if text == "auto":
         cpu = capacity["cpu_quota_cores"]
@@ -222,8 +241,12 @@ def resolve_workers(value: str) -> tuple[int, dict[str, object]]:
         if workers not in range(1, MAX_PIPELINE_WORKERS + 1):
             raise ValueError(_WORKER_RANGE_TEXT)
         policy = "explicit"
-    return workers, {"requested": text, "selected": workers,
-                     "policy": policy, "cgroup": capacity}
+    receipt = {"requested": requested, "selected": workers,
+               "policy": policy, "cgroup": capacity}
+    if override:
+        receipt["policy"] = policy + f" ({PIPELINE_WORKERS_ENV})"
+        receipt["override"] = {"env": PIPELINE_WORKERS_ENV, "value": text}
+    return workers, receipt
 
 
 def _parse_manifest(path: Path) -> dict[str, str]:

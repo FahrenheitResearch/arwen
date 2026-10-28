@@ -68,6 +68,15 @@ CHEM_PRODUCT_ROWS = (
 #: Executable base name of the vendored batch renderer.
 RENDERER_NAME = "rw_wrfbatch"
 
+#: The built-in render themes the shipped renderer resolves by name
+#: (rustwx-render theme.rs ``RenderTheme::builtin_names``), for a caller that
+#: picks a theme per run before anything renders.  ``woof-light-tc`` is the
+#: WOOF look with the tropical-cyclone wind ladder (bands on 34, 50, 64, 83,
+#: 96, 113 and 137 kt, to 180 kt) and isobars every 4 hPa from 880 hPa.  A
+#: caller names a theme only when it is listed here: an unknown name is a
+#: THEME_ERROR, and every map of the run falls back to the plain default look.
+RENDER_THEMES = ("default", "light", "dark", "woof-light", "woof-dark", "tc", "woof-light-tc")
+
 #: How a native renderer line opens when it tells the reader something
 #: about the pictures themselves -- a subtitle it had to cut, a record it
 #: had to start over -- rather than reporting progress.

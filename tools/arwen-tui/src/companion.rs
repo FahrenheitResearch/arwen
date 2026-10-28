@@ -1753,7 +1753,6 @@ mod tests {
         let parent=root.join(".arwen-tui");
         let empty=|id:String|{let directory=parent.join(format!("companion-{id}"));fs::create_dir_all(&directory).unwrap();directory};
         let young=empty(format!("{}-1",std::process::id()));
-        let later=now_ms()+VIEWER_SESSION_LIVE.as_millis()+1_000;
         // A starting controller always holds its queues; only a removal that a
         // reader blocked on the status file itself leaves an empty directory.
         let starting=parent.join("companion-starting");fs::create_dir_all(starting.join("requests")).unwrap();
@@ -1765,6 +1764,10 @@ mod tests {
         let foreign=empty(format!("{}-2",running.id()));
         let ended=empty(format!("{}-3",ended_process()));
         let unnamed=empty("young".into());
+        // "Later" is read after every directory exists: spawning the two helper processes can take
+        // over a second on a loaded Windows host, and a `later` read before them left the ended
+        // session's directory younger than the live window (R8 2.9.9 all-fixes pass 1).
+        let later=now_ms()+VIEWER_SESSION_LIVE.as_millis()+1_000;
         assert!(finished_viewer_session(&young,now_ms()).is_none(),"a young directory is waited for, not swept");
         assert!(finished_viewer_session(&starting,later).is_none(),"a session that holds its queues is not empty debris");
         assert!(finished_viewer_session(&foreign,later).is_none(),"a live TUI's empty session directory is not this process's to remove");

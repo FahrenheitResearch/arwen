@@ -540,7 +540,27 @@ pub fn operational_contour_layer_for_values(
         FieldSelector {
             field: CanonicalField::PressureReducedToMeanSeaLevel,
             ..
-        } => operational_pressure_contour_policy(range_step(960.0, 1045.0, 2.0)),
+        } => {
+            // A theme may name its own isobar set (the `tc` sheet: every
+            // 4 hPa from 880 hPa); absent one, the operational 960-1045 hPa.
+            let theme = rustwx_render::theme::active_theme();
+            match theme.contour_levels("mslp") {
+                Some(levels) => {
+                    let (_, color, width, labels, major_every, major_width, show_extrema) =
+                        operational_pressure_contour_policy(Vec::new());
+                    (
+                        levels.to_vec(),
+                        color,
+                        width,
+                        labels,
+                        theme.contour_label_every("mslp").or(major_every),
+                        major_width,
+                        show_extrema,
+                    )
+                }
+                None => operational_pressure_contour_policy(range_step(960.0, 1045.0, 2.0)),
+            }
+        }
         FieldSelector {
             field: CanonicalField::UpdraftHelicity,
             vertical:

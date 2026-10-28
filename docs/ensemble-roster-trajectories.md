@@ -9,8 +9,10 @@ same planner and preparation chain. An explicit roster flag retains a list
 already configured in the file.
 
 Every trajectory must cover the complete forecast window with its published
-valid-time knots. A short window ending between a source's published knots is
-refused; this extension adds no temporal interpolation. Each member still
+valid-time knots. A window that ends between a source's published knots (a 2 h
+run on 3-hourly GFS) acquires the knots that enclose it (f0/f3) and keeps its
+own end, exactly as the single-run door does: native preparation interpolates
+the boundary tendency between them. Every recipe kind brackets this way. Each member still
 uses ordinary source preparation and its own full physics memory admission.
 The land and fixed surface selectors, duplicate-arm checks, stochastic
 admission, original runner and packing policy are unchanged.

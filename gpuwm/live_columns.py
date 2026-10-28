@@ -5,6 +5,8 @@ and any hour costs nothing extra; the tiled layout is rw-store version 2 (``RWST
 tools/rustwx/crates/rw-store/src/columns.rs). Each committed history frame on the cadence (whole hours by default)
 becomes ``<run>/columns/<domain>/<YYYYMMDDTHHMMSSZ>.wcol`` through ``rw_soundings --columns``
 (:func:`gpuwm.soundings.write_columns`), and at the end each grid's last frame too when the run ends off the hour.
+Only frames that carry the 3-D state are taken (:class:`StateFrames`): with ``[output] full_history_interval_s``
+the frames between the full-history leads hold the 2-D subset, and the store follows the full frames, said once.
 
 Shaped like :class:`gpuwm.grib2_live.LiveGrib2Export`: one serial queue on its own thread, independent of map
 rendering, so a frame is written while the model integrates the next hour and a slow picture never delays it.
@@ -27,6 +29,7 @@ import queue
 import re
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -98,8 +101,14 @@ class LiveColumns:
 
     def __init__(self, out: Path, *, report: Callable[[dict], None] | None = None,
                  warn: Callable[..., None] | None = None, writer: Callable[..., list] | None = None,
-                 minutes: int | None = None, threads: int | None = None, timeout: float | None = None):
+                 minutes: int | None = None, threads: int | None = None, timeout: float | None = None,
+                 frames: Callable[..., bool] | None = None):
         self.out = Path(out)
+        #: Which committed frames carry the 3-D state ``rw_soundings --columns`` reads (:class:`StateFrames`), or
+        #: ``None`` to take every frame on the cadence. A frame that does not is never attempted.
+        self.frames = frames
+        self._skipped = 0
+        self._noted: set[str] = set()      # grids whose state-less frames were said
         self._report = report or (lambda event: None)
         self._warn = warn or (lambda *a, **k: None)
         self._timeout = frame_timeout_seconds() if timeout is None else float(timeout)
@@ -118,16 +127,42 @@ class LiveColumns:
         self._thread.start()
 
     def frame_committed(self, *, domain: int, valid_time, path) -> bool:
-        """Queue one durable frame when it is on the cadence; remember it as its grid's latest either way."""
+        """Queue one durable frame when it is on the cadence; remember it as its grid's latest either way.
+
+        A frame written without the 3-D state (:attr:`frames` says so) is neither queued nor remembered: a frame
+        between full-history leads, a quick-look frame, a selection that sheds ``P``. THE BREAKAGE: each such frame
+        on the cadence ran ``rw_soundings --columns`` and warned "column store not written: variable not found in
+        WRF file: P" (21 warnings per 24 h HRRR-recipe member with full history every 3 h, updraft factory
+        2026-10-27). The grid's first one is said once, as a ``state_frames_only`` progress event."""
         frame = Path(path)
         m = _DOMAIN.search(frame.name)
         grid = m[1] if m else f"d{int(domain):02d}"
+        if not self._carries_state(domain, valid_time, frame):
+            with self._lock:
+                self._skipped += 1
+                first = grid not in self._noted
+                self._noted.add(grid)
+            if first:
+                describe = getattr(self.frames, "describe", None)
+                cadence = describe(domain) if callable(describe) else "this frame carries no 3-D state"
+                self._report({"event": "state_frames_only", "domain": grid, "frame": str(frame),
+                              "note": f"the {grid} column store takes the frames that carry the 3-D state: "
+                                      f"{cadence}; the others are not attempted"})
+            return False
         with self._lock:
             self._last[grid] = frame
         if on_cadence(frame, self._minutes):
             self._queue.put(frame)
             return True
         return False
+
+    def _carries_state(self, domain, valid_time, frame: Path) -> bool:
+        if self.frames is None:
+            return True
+        try:
+            return bool(self.frames(int(domain), valid_time, frame))
+        except Exception:  # noqa: BLE001 - an undecidable frame is attempted, as every frame was before
+            return True
 
     def _write(self, frame: Path) -> None:
         key = str(frame)
@@ -204,7 +239,7 @@ class LiveColumns:
                     "stopped": not self._thread.is_alive(),
                     "files": len(self._written), "bytes": sum(r["bytes"] for r in self._written),
                     "seconds": round(self._seconds, 3), "failed": list(self._failed),
-                    "written": list(self._written)}
+                    "skipped_without_state": self._skipped, "written": list(self._written)}
 
 
 #: What ``rw_soundings --columns`` reads from a WRF-shaped frame (rw-soundings input.rs ``wrf_grid``): the 3-D state,
@@ -212,6 +247,90 @@ class LiveColumns:
 SOUNDING_FIELDS = ("P", "PB", "PH", "PHB", "T", "QVAPOR", "U", "V", "W", "PSFC", "HGT", "T2", "Q2", "U10", "V10",
                    "XLAT", "XLONG", "COSALPHA", "SINALPHA")
 _SURFACE_GRID = ("XLAT", "XLONG", "COSALPHA", "SINALPHA", "HGT")
+#: The ones a frame cannot be stored without (the map rotation is optional).
+STATE_FIELDS = tuple(n for n in SOUNDING_FIELDS if n not in ("COSALPHA", "SINALPHA"))
+
+
+def carries_state(selection, lead_seconds=None) -> bool:
+    """Whether a frame written with ``selection`` (a :class:`gpuwm.io.history_selection.HistorySelection`) at
+    ``lead_seconds`` keeps every field of :data:`STATE_FIELDS`: the subset it takes at that lead
+    (:meth:`~gpuwm.io.history_selection.HistorySelection.for_lead`, the writer's own rule) is asked by name."""
+    if selection is None:
+        return True
+    chosen = selection.for_lead(lead_seconds)
+    return all(chosen.keeps(name) for name in STATE_FIELDS)
+
+
+def _lead_seconds(valid_time, path: Path, start) -> float | None:
+    """Seconds from ``start`` to the frame's valid time (the object, its text, else the file's stamp), or None."""
+    if not isinstance(start, datetime):
+        return None
+    valid = valid_time if isinstance(valid_time, datetime) else None
+    if valid is None and valid_time is not None:
+        try:
+            valid = datetime.strptime(str(valid_time)[:19].replace("T", "_"), "%Y-%m-%d_%H:%M:%S")
+        except ValueError:
+            valid = None
+    if valid is None:
+        m = _STAMP.search(Path(path).name)
+        if m is None:
+            return None
+        valid = datetime.strptime(f"{m[1]}_{m[2]}:{m[3]}:{m[4]}", "%Y-%m-%d_%H:%M:%S")
+    return (valid.replace(tzinfo=None) - start.replace(tzinfo=None)).total_seconds()
+
+
+class StateFrames:
+    """Which of a run's committed history frames carry the 3-D state the column store reads.
+
+    Decided from the run's own ``[output]`` selection the way the writer decides what a frame holds
+    (``WrfoutWriter._history_plan``), without opening the file: per grid the domain's own selection else the
+    tree's (:func:`gpuwm.io.history_selection.resolve`), at the frame's lead from the domain's own start (the
+    writer's ``START_DATE``), so a frame between ``full_history_interval_s`` leads takes the between-hours subset;
+    a quick-look frame (``quicklook/``) takes the domain's quick-look selection. A grid it does not know, or a
+    frame whose lead cannot be read, counts as carrying it (it is attempted, as every frame was before)."""
+
+    def __init__(self, grids: dict):
+        #: ``{grid_id, or None for any grid: (selection, start, quick-look selection)}``
+        self._grids = dict(grids)
+
+    @classmethod
+    def for_experiment(cls, experiment) -> "StateFrames":
+        from gpuwm.io.history_selection import resolve
+        tree = getattr(experiment, "output", None)
+        start = getattr(experiment, "start_time", None)
+        return cls({int(d.grid_id): (resolve(tree, getattr(d, "output", None)),
+                                     getattr(d, "start_time", None) or start,
+                                     getattr(d, "quicklook_output", None))
+                    for d in (getattr(experiment, "domains", None) or ())})
+
+    @classmethod
+    def for_selection(cls, selection) -> "StateFrames":
+        """One standing selection for every frame, whatever its lead (an offline child's ``[output]``)."""
+        return cls({None: (selection, None, None)})
+
+    def _entry(self, domain):
+        return self._grids.get(int(domain), self._grids.get(None))
+
+    def __call__(self, domain, valid_time, path) -> bool:
+        entry = self._entry(domain)
+        if entry is None:
+            return True
+        selection, start, quicklook = entry
+        if quicklook is not None and Path(path).parent.name == "quicklook":
+            return carries_state(quicklook)
+        return carries_state(selection, _lead_seconds(valid_time, Path(path), start))
+
+    def describe(self, domain) -> str:
+        """The cadence of the frames that do, in words, for the one line that says it."""
+        entry = self._entry(domain)
+        selection = entry[0] if entry is not None else None
+        interval = float(getattr(selection, "full_history_interval_s", 0.0) or 0.0)
+        if interval and carries_state(selection):
+            return (f"full history every {interval:g} s ([output] full_history_interval_s), the frames between "
+                    "hold the 2-D subset")
+        if entry is not None and entry[2] is not None and carries_state(selection):
+            return "the quick-look frames hold their subset only"
+        return "this grid's [output] selection writes no 3-D state (P, PH, T, QVAPOR, U, V, W)"
 
 
 def _host(array):

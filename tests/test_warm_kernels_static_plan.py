@@ -11,9 +11,11 @@ stood in for.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import threading
+import time
 from types import SimpleNamespace
 
 from gpuwm import kernel_plan, kernel_prewarm, warm_kernels
@@ -126,6 +128,37 @@ def test_go_spawns_the_kernel_prewarm_and_joins_it_before_the_forecast(monkeypat
     go_cli._join_kernel_prewarm(plan)
     assert process.waited == go_cli._KERNEL_PREWARM_WAIT_S and go_cli._KERNEL_PREWARM == {}
     go_cli._join_kernel_prewarm(plan)  # nothing to join a second time
+
+
+def test_go_stops_a_late_prewarm_and_keeps_its_stacks(monkeypatch, tmp_path):
+    """A pre-warm child with no result must not hold the forecast (WOOF gates 2026-10-26:
+    run_7598e0f80ef30547 and run_9b996f4a5cad6e89 waited the old 300 s bound)."""
+    from gpuwm import go_cli
+
+    log = open(tmp_path / "kernel-prewarm.log", "w", encoding="utf-8")
+    child = "\n".join((
+        "import faulthandler, signal, time",
+        "if hasattr(signal, 'SIGUSR1'): faulthandler.register(signal.SIGUSR1, all_threads=True)",
+        "def stuck_in_the_prewarm():",
+        "    time.sleep(600)",
+        "print('started', flush=True)",
+        "stuck_in_the_prewarm()", ""))
+    process = subprocess.Popen([sys.executable, "-c", child], stdin=subprocess.DEVNULL, stdout=log,
+                               stderr=subprocess.STDOUT,
+                               **({"start_new_session": True} if os.name == "posix" else {}))
+    deadline = time.monotonic() + 30
+    while "started" not in (tmp_path / "kernel-prewarm.log").read_text() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    marks = []
+    monkeypatch.setattr(go_cli, "_kernel_prewarm_status", lambda plan, status, reason=None, **a: marks.append(status))
+    monkeypatch.setattr(go_cli, "_KERNEL_PREWARM", {str(tmp_path): (process, log, time.monotonic())})
+    monkeypatch.setattr(go_cli, "_KERNEL_PREWARM_WAIT_S", 0.5)
+    began = time.monotonic()
+    go_cli._join_kernel_prewarm({"root": tmp_path})
+    assert time.monotonic() - began < 15
+    assert process.poll() is not None and marks == ["stopped"] and go_cli._KERNEL_PREWARM == {}
+    if os.name == "posix":
+        assert "stuck_in_the_prewarm" in (tmp_path / "kernel-prewarm.log").read_text()
 
 
 def test_go_does_not_spawn_for_a_dry_run_or_without_a_card(monkeypatch, tmp_path):

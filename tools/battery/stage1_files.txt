@@ -3027,3 +3027,5 @@ tests/test_wheel_glibc_tag.py
 tests/test_hydro_short_run_history.py
 tests/test_static_sources.py
 tests/test_renderer_warnings.py
+tests/test_cuda_wait.py
+tests/test_prep_host_parallel.py

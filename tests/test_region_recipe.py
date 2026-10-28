@@ -328,3 +328,35 @@ def test_a_row_outside_its_source_is_refused_by_row_and_source(tmp_path):
             spacing_km=3, source="hrrr", cycle="2026-10-11T12", hours=1)
     assert str(refusal.value).startswith("region 'far-row' with source hrrr: ")
     assert "hrrr's grid" in str(refusal.value)
+
+
+def test_hrrr_recipe_on_a_pre_v4_cycle_is_served_at_the_era_top(tmp_path):
+    """The recipe's 1500 Pa top is raised to what a pre-v4 HRRR cycle reaches.
+
+    Breakage (updraft-factory, 2026-10-27): `gpuwm domain --recipe
+    hrrr_v4_gsd41 --source hrrr` on 2020-05-22, 2020-08-10, 2019-06-20 and
+    2019-03-24 12Z emitted p_top 1500 Pa, and each preparation refused at
+    root_initialize ("target pressure lies above source top") after a 26 GB
+    fetch.  HRRR's native top was 20 hPa until the 2020-12-02 00Z cycle and
+    15 hPa from it (wrfnat hybrid level 50: 2230.3 Pa, then 1731.5 Pa); the
+    HRRR row carries that as data and the emission takes the higher top.
+    """
+    from gpuwm.source_adapters import source_top_pa_for_cycle
+    region = tmp_path / "polygon.json"
+    region.write_text(json.dumps({"type": "Polygon", "coordinates": [[
+        [-100.5, 38.5], [-99.5, 38.5], [-99.5, 39.5], [-100.5, 39.5], [-100.5, 38.5]]]}))
+    tops = {}
+    for cycle in ("2020-05-22T12", "2020-12-01T23", "2020-12-02T00", "2022-06-11T12"):
+        text, receipt = emit_recipe_at(region, cycle)
+        tops[cycle] = (tomllib.loads(text)["shared"]["p_top"], receipt["model_top"]["raised"])
+    assert tops == {"2020-05-22T12": (2000.0, True), "2020-12-01T23": (2000.0, True),
+                    "2020-12-02T00": (1500.0, False), "2022-06-11T12": (1500.0, False)}
+    assert source_top_pa_for_cycle("hrrr-native", "2019-06-20T12") == 2000.0
+    assert source_top_pa_for_cycle("gfs", "2019-06-20T12") is None
+    assert source_top_pa_for_cycle("hrrr", "latest") is None
+
+
+def emit_recipe_at(region, cycle):
+    from gpuwm.region_recipe import emit_recipe
+    return emit_recipe(recipe="hrrr_v4_gsd41", region=str(region),
+        spacing_km=3, source="hrrr", cycle=cycle, hours=1)

@@ -128,6 +128,10 @@ def step(fields, *, dt, dx, dy, stbolt=5.67051e-8):
     for j,name in enumerate(PROGNOSTIC):
         cp.copyto(base[j], fields[name])
     common=tuple(fields[name] for name in (*PROGNOSTIC,'om_depth'))
+    # With the sea-ice model active, the columns whose surface fluxes its step
+    # set take their heat from ICE_OCEAN_HEAT in seaice.reconcile_ocean.
+    coupled_ice=int('ice_ocean_coupled' in fields)
+    ice_mask=fields['ice_ocean_coupled'] if coupled_ice else fields['_pwp_land']
     for first,stage_dt in ((1,2*dt),(0,0.5*dt)):
         _launch(module,'pwp_geometry',n, common +
                 tuple(fields[name] for name in ('om_tini','om_sini','_pwp_land','_pwp_mx','_pwp_my','_pwp_w','_pwp_p'))+
@@ -137,8 +141,9 @@ def step(fields, *, dt, dx, dy, stbolt=5.67051e-8):
                 (np.float32(1/dx),np.float32(1/dy),np.int32(nx),np.int32(ny),np.int32(first)))
         _launch(module,'pwp_column',n,
                 tuple(fields[name] for name in (*PROGNOSTIC,'om_density','om_ml','tsk','_pwp_base','om_depth','om_tini','om_sini',
-                                               'hfx','lh','gsw','glw','qfx','ust','uair','vair','f','_pwp_land','_pwp_tend','_pwp_status'))+
-                (np.float32(dt),np.float32(stage_dt),np.float32(stbolt),np.int32(n)),block=32)
+                                               'hfx','lh','gsw','glw','qfx','ust','uair','vair','f','_pwp_land'))+
+                (ice_mask,fields['_pwp_tend'],fields['_pwp_status'])+
+                (np.float32(dt),np.float32(stage_dt),np.float32(stbolt),np.int32(coupled_ice),np.int32(n)),block=32)
 
 
 def check(fields):

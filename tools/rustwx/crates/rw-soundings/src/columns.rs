@@ -70,14 +70,15 @@ pub fn run(req: ColumnsRequest) -> Res<Vec<Written>> {
         .build()
         .map_err(err)?;
     let mut written = vec![];
-    // Files one at a time (a 3 km nest's time is ~1 GB of f64 fields); the tiles of each in parallel.
+    // Files one at a time (a 3 km nest's time is ~1 GB of f64 fields, a 1 km zoom globe's ~30 GB); within each,
+    // the grid's levels and row bands, then the tiles, on every core of the pool.
     for source in &req.sources {
         let f = WrfFile::open(&source.path).map_err(|e| format!("{}: {e}", source.path.display()))?;
         let run_info = req.run.clone().or(&RunInfo::from_wrf(&f));
         for (ti, time) in f.times().map_err(err)?.iter().enumerate() {
             let started = std::time::Instant::now();
-            f.prepare_cache_for_time(ti);
-            let grid = input::wrf_grid(&f, ti)?;
+            let grid = pool.install(|| input::wrf_grid(&f, &source.path, ti))?;
+            let read_ms = started.elapsed().as_secs_f64() * 1e3;
             let valid = input::parse_time(time)?;
             let dir = if source.member == "det" {
                 req.out.join(&source.domain)
@@ -88,14 +89,29 @@ pub fn run(req: ColumnsRequest) -> Res<Vec<Written>> {
             let bytes = pool.install(|| {
                 write_file(&path, &grid, &source.domain, &source.member, valid, req.tile, req.exact, &run_info)
             })?;
-            drop(grid);
-            f.clear_cache();
+            let write_ms = started.elapsed().as_secs_f64() * 1e3 - read_ms;
+            // Freed on the pool too: a 1 km globe's grid is tens of GB of pages to hand back.
+            pool.install(|| free_grid(grid));
             let ms = started.elapsed().as_secs_f64() * 1e3;
+            // Stage times for the caller's receipt (stderr: stdout's COLUMNS rows are parsed).
+            eprintln!(
+                "COLUMNS-STAGES {} grid_ms={read_ms:.0} encode_write_ms={write_ms:.0} free_ms={:.0} threads={}",
+                path.display(),
+                ms - read_ms - write_ms,
+                pool.current_num_threads()
+            );
             println!("COLUMNS {} bytes={} ms={:.0}", path.display(), bytes, ms);
             written.push(Written { path, bytes, ms });
         }
     }
     Ok(written)
+}
+
+/// Drop the grid's fields side by side.
+fn free_grid(g: WrfGrid) {
+    use rayon::prelude::*;
+    let WrfGrid { lat, lon, p, z, t, td, u, v, omega, ps, terrain, t2, q2, u10, v10, .. } = g;
+    vec![lat, lon, p, z, t, td, u, v, omega, ps, terrain, t2, q2, u10, v10].into_par_iter().for_each(drop);
 }
 
 /// The version 2 description of one WRF-shaped grid: the canonical fields, pressure Pa -> hPa and 2 m
@@ -172,12 +188,10 @@ mod tests {
 
     fn grid(nx: usize, ny: usize, nz: usize) -> WrfGrid {
         let n = nx * ny;
-        let v3 = |f: &dyn Fn(usize, usize, usize) -> f64| -> std::sync::Arc<[f64]> {
-            (0..nz * n).map(|i| f(i / n, (i % n) % nx, (i % n) / nx)).collect::<Vec<_>>().into()
+        let v3 = |f: &dyn Fn(usize, usize, usize) -> f64| -> Vec<f64> {
+            (0..nz * n).map(|i| f(i / n, (i % n) % nx, (i % n) / nx)).collect()
         };
-        let v2 = |f: &dyn Fn(usize, usize) -> f64| -> std::sync::Arc<[f64]> {
-            (0..n).map(|i| f(i % nx, i / nx)).collect::<Vec<_>>().into()
-        };
+        let v2 = |f: &dyn Fn(usize, usize) -> f64| -> Vec<f64> { (0..n).map(|i| f(i % nx, i / nx)).collect() };
         WrfGrid {
             nx,
             ny,
@@ -231,8 +245,7 @@ mod tests {
     fn real_history_round_trips() {
         let Ok(path) = std::env::var("RW_COLUMNS_WRFOUT") else { return };
         let f = WrfFile::open(Path::new(&path)).unwrap();
-        f.prepare_cache_for_time(0);
-        let g = input::wrf_grid(&f, 0).unwrap();
+        let g = input::wrf_grid(&f, Path::new(&path), 0).unwrap();
         let n = g.nx * g.ny;
         let td2: Vec<f64> = (0..n).map(|i| g.td2(i)).collect();
         for exact in [true, false] {
@@ -277,5 +290,59 @@ mod tests {
             );
             assert_eq!(differ, 0);
         }
+    }
+
+    /// On a real history file (RW_COLUMNS_WRFOUT=path, `cargo test -- --ignored`): the parallel grid (levels and
+    /// row bands on every core, windows read by the tasks) holds every value of the serial whole-field route
+    /// (wrf-core's derived fields), bit for bit, in every field.
+    #[test]
+    #[ignore]
+    fn parallel_grid_is_bitwise_the_serial_one() {
+        let Ok(path) = std::env::var("RW_COLUMNS_WRFOUT") else { return };
+        let f = WrfFile::open(Path::new(&path)).unwrap();
+        let started = std::time::Instant::now();
+        let a = input::wrf_grid(&f, Path::new(&path), 0).unwrap();
+        let parallel_s = started.elapsed().as_secs_f64();
+        let started = std::time::Instant::now();
+        let b = input::wrf_grid_serial(&f, 0).unwrap();
+        let serial_s = started.elapsed().as_secs_f64();
+        assert_eq!((a.nx, a.ny, a.nz), (b.nx, b.ny, b.nz));
+        let fields = |g: &WrfGrid| -> Vec<(&'static str, Vec<u64>)> {
+            [
+                ("lat", &g.lat),
+                ("lon", &g.lon),
+                ("p", &g.p),
+                ("z", &g.z),
+                ("t", &g.t),
+                ("td", &g.td),
+                ("u", &g.u),
+                ("v", &g.v),
+                ("omega", &g.omega),
+                ("ps", &g.ps),
+                ("terrain", &g.terrain),
+                ("t2", &g.t2),
+                ("q2", &g.q2),
+                ("u10", &g.u10),
+                ("v10", &g.v10),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k, v.iter().map(|x| x.to_bits()).collect()))
+            .collect()
+        };
+        let mut differ = 0usize;
+        for ((name, x), (_, y)) in fields(&a).into_iter().zip(fields(&b)) {
+            assert_eq!(x.len(), y.len(), "{name}");
+            let d = x.iter().zip(&y).filter(|(p, q)| p != q).count();
+            println!("FIELD {name} values={} differing={d}", x.len());
+            differ += d;
+        }
+        println!(
+            "GRID {path} {}x{}x{} parallel_s={parallel_s:.2} serial_s={serial_s:.2} threads={} differing={differ}",
+            a.nx,
+            a.ny,
+            a.nz,
+            rayon::current_num_threads()
+        );
+        assert_eq!(differ, 0);
     }
 }

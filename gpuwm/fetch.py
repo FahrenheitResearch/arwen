@@ -3091,6 +3091,15 @@ def cached_request_complete(out: Path, *, source: str, cycle: datetime,
                and entry.get("forecast_hour") in wanted]
     if {entry.get("forecast_hour") for entry in payload} != wanted:
         return False
+    if source == "hrrr" and _hrrr_receipt_is_mixed(prior, payload):
+        # Every file is here, but not as one series: the fetch has files
+        # to move (whole files and .idx subsets are brought to one mode),
+        # so it goes the way a fresh one does.
+        if progress is not None:
+            progress(f"fetch {source}: {out} holds this request's hours "
+                     "in two byte modes (whole files and .idx subsets); "
+                     "the fetch brings them to one")
+        return False
     vouched: list[tuple[Path, str]] = []
     for entry in payload:
         name = entry.get("name")
@@ -5153,6 +5162,74 @@ def _prior_manifest_bars(out: Path) -> dict[str, object]:
         return {}
 
 
+#: The byte modes an HRRR file can land in; ``auto`` only chooses
+#: between them, per file.
+HRRR_LANDED_MODES = ("full-file", "idx-subset")
+
+
+def _hrrr_landed_mode(entry: dict | None, records: int | None,
+                      subset_ceiling: int) -> str | None:
+    """Is a kept HRRR file a whole object or an ``.idx`` record subset?
+
+    A receipt says so per file (``mode``).  One written before that key
+    existed is read by its census: a subset carries at most the
+    selection's records, a whole ``wrfnat`` or ``wrfprs`` hundreds more.
+    ``None`` when there is nothing to read it from.
+    """
+
+    recorded = (entry or {}).get("mode")
+    if recorded in HRRR_LANDED_MODES:
+        return recorded
+    if isinstance(records, bool) or not isinstance(records, int):
+        return None
+    return "full-file" if records > subset_ceiling else "idx-subset"
+
+
+def _hrrr_receipt_is_mixed(prior: dict, entries) -> bool:
+    """Does a receipt claim HRRR hours in two byte modes for one product?"""
+
+    from tools import download_hrrr_native_subset as range_transport
+
+    ceilings = {
+        "atmosphere": range_transport.atmosphere_record_count(
+            analyzed_aerosol=True,
+            extras=tuple(prior.get("native_extras") or ())),
+        "soil": range_transport.SOIL_RECORD_COUNT}
+    found: dict[str, set[str]] = {}
+    for entry in entries:
+        role = entry.get("role")
+        if role not in ceilings:
+            continue
+        ceiling = ceilings[role] + (
+            len(entry.get("runtime_surface") or ()) if role == "soil" else 0)
+        landed = _hrrr_landed_mode(entry, entry.get("records"), ceiling)
+        if landed is not None:
+            found.setdefault(role, set()).add(landed)
+    return any(len(modes) > 1 for modes in found.values())
+
+
+def _hrrr_mixed_series_refusal(out: Path, mixed: dict[str, dict]) -> str:
+    """Why a fetch whose hours landed in two byte modes stops here.
+
+    ``mixed`` maps a product kind to ``{landed mode: [file names]}``.
+    """
+
+    lines = []
+    for kind, modes in mixed.items():
+        for landed, names in sorted(modes.items()):
+            lines.append(f"  {kind} {landed}: {', '.join(sorted(names))}")
+    return layered(
+        f"--out {out}: the HRRR hours landed in two byte modes:\n"
+        + "\n".join(lines)
+        + "\n  remedy: run the same command again with --mode full-file "
+        "or --mode idx-subset; the files of the other mode are moved "
+        "aside (nothing is deleted) and fetched again in the named one.",
+        "  why: a whole file carries records an .idx subset does not "
+        "(PBLH, LCDC, MCDC, HCDC), and hrrr_grib2_bridge selects them "
+        "wherever they are published, so the preparation refuses a "
+        "series whose hours carry different record sets.")
+
+
 def _existing_hrrr_digest(dest: Path, *, expected_count: int,
                           prior_digest: str | None, progress,
                           label: str) -> str | None:
@@ -5591,13 +5668,17 @@ def _download_one_hrrr_product(
         bar_kind: str, certified: int, accept_inventory_change: bool,
         progress, dedup: list[dict] | None = None,
         streams: int | None = None, byte_relay=None,
-        analyzed_aerosol: bool = False, extras=()):
+        analyzed_aerosol: bool = False, extras=(),
+        mode_sink: dict | None = None):
     """Download one HRRR product from one host; ``(bar, url)``.
 
     ``dedup`` collects each Rust transfer's cache accounting, which the
     receipt sums; the download's own answer stays the two-value pair
-    every caller unpacks.  ``streams`` and ``byte_relay`` reach the Rust
-    backbone only (see :func:`_rw_fetch_hrrr`).
+    every caller unpacks.  ``mode_sink`` hears the byte mode the file
+    landed in (``mode_sink["mode"]``): under ``auto`` the backbone's
+    probe picks it per file, and the Python transport only takes
+    subsets.  ``streams`` and ``byte_relay`` reach the Rust backbone
+    only (see :func:`_rw_fetch_hrrr`).
 
     Raises
     :class:`tools.download_hrrr_native_subset.IndexInventoryError` when
@@ -5633,6 +5714,8 @@ def _download_one_hrrr_product(
             **({"extras": extras} if extras else {}))
         if dedup is not None and isinstance(entry.get("dedup"), dict):
             dedup.append(entry["dedup"])
+        if mode_sink is not None:
+            mode_sink["mode"] = entry.get("mode")
         url = entry["grib_url"]
         landed = out / entry["name"]
         if landed != dest:
@@ -5672,6 +5755,8 @@ def _download_one_hrrr_product(
                 "the file has been moved aside, nothing was deleted")
         return bar, url
 
+    if mode_sink is not None:
+        mode_sink["mode"] = "idx-subset"
     request = range_transport.ProductRequest(
         url=url,
         index_url=url + ".idx",
@@ -5960,6 +6045,43 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
         prior_entries = {}
         prior_records = {}
     bars.update(_prior_manifest_bars(out))
+    # One record set per series.  A whole file carries records an .idx
+    # subset does not (PBLH, LCDC, MCDC, HCDC), hrrr_grib2_bridge selects
+    # them wherever they are published, and it refuses a series whose
+    # hours differ.  A resume used to keep a prior fetch's files in
+    # whatever mode they landed and fetch the missing hours in this
+    # request's mode: `--mode idx-subset` over an interrupted full-file
+    # folder published f00-f15 whole + f16-f24 subsets under one receipt,
+    # and the preparation refused 80-146 s in (updraft factory,
+    # 2023-08-07 and 2019-06-09).  What each file landed as is now read
+    # (receipt key, else census) and the series is brought to one mode
+    # before anything moves.
+    subset_ceiling = {
+        "atmosphere": range_transport.atmosphere_record_count(
+            analyzed_aerosol=True, extras=extras),
+        "soil": range_transport.SOIL_RECORD_COUNT + len(runtime_rows)}
+    # What a download lands as: the Python transport only takes subsets;
+    # the backbone takes the named mode, and under 'auto' its probe
+    # decides per file.
+    lands = ("idx-subset" if engine == "python"
+             else None if mode == "auto" else mode)
+    series_mode: dict[str, str | None] = {}
+
+    def kept_mode(dest_name: str, kind: str) -> str | None:
+        dest = out / dest_name
+        if not dest.exists():
+            return None
+        records = prior_records.get(dest_name)
+        if records is None:
+            # On disk but claimed by no receipt (a half-fetched hour):
+            # its own census says what it is.
+            try:
+                records = count_grib2_messages(dest)
+            except ValueError:
+                return None
+        return _hrrr_landed_mode(prior_entries.get(dest_name), records,
+                                 subset_ceiling[kind])
+
     deadline = clock() + wait_timeout_s
     files: list[dict] = []
     complete_hours: list[int] = []
@@ -6010,7 +6132,13 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
         payload["engine"] = engine
         payload["engine_selection"] = _engine_selection(
             engine, engine_selection)
-        payload["mode"] = mode
+        # The mode the claimed files ARE in (each file also says its
+        # own), not only the one asked for: a resume that kept another
+        # fetch's files labelled a whole + subset folder "full-file".
+        in_modes = {item.get("mode") for item in claimed}
+        payload["mode"] = (in_modes.pop() if len(in_modes) == 1
+                           and None not in in_modes else mode)
+        payload["requested_mode"] = mode
         if extras:
             payload["native_extras"] = list(extras)
         payload["record_bars"] = [
@@ -6044,13 +6172,23 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
         file_started = time.perf_counter()
         digest = None
         runtime_binding = None
+        mode_sink: dict = {}
         if (dest.exists() and not force and kind == "atmosphere"
                 and analyzed_aerosol
                 and prior_records.get(dest_name, 0) < expected_counts[kind]):
             # A subset kept from a fetch whose preparation did not read the
             # aerosol pair: it lacks the records this one needs, so it is
-            # set aside (never deleted) and fetched again.
-            _quarantine_rejected(dest, progress, f"hrrr {label}")
+            # set aside (never deleted) and fetched again.  Said in the
+            # line: an idx-subset folder fetched without --analyzed-aerosol
+            # for an mp=28 aerosol-aware run is moved aside file by file and
+            # downloaded again, and the bare "moved rejected file aside"
+            # read as a broken fetch (StormNet-plus factory, 2026-10-27).
+            _quarantine_rejected(
+                dest, progress,
+                f"hrrr {label} (subset lacks the analyzed aerosol records "
+                "QNWFA/QNIFA this preparation reads; fetch subsets for an "
+                "aerosol-aware mp=28 run with `gpuwm fetch --mode idx-subset "
+                "--analyzed-aerosol`)")
         if dest.exists() and not force and previous_extras != extras:
             _quarantine_rejected(dest, progress,
                 "native extra request changed; prevents reusing a different tracer inventory")
@@ -6133,7 +6271,11 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
                                       transport=host)
                 try:
                     bar, url = _download_one_hrrr_product(
-                        engine=engine, engine_bin=engine_bin, mode=mode,
+                        engine=engine, engine_bin=engine_bin,
+                        # The series' mode when one was settled above, so
+                        # a file fetched again lands like its neighbours.
+                        mode=series_mode.get(kind) or mode,
+                        mode_sink=mode_sink,
                         cycle=cycle, hour=hour, kind=kind, host=host,
                         url=url, dest=dest, dest_name=dest_name,
                         source_name=source_name, out=out, label=label,
@@ -6182,11 +6324,18 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
                          f"{dest.stat().st_size:,} B in "
                          f"{time.perf_counter() - started:.1f} s "
                          f"({chosen})")
+        records = (_fetched_records(dest) if downloaded
+                   else count_grib2_messages(dest))
         return {
             "name": dest_name, "role": kind, "forecast_hour": hour,
             "bytes": dest.stat().st_size, "sha256": digest,
             "url": url, "transport": chosen,
-            "records": _fetched_records(dest) if downloaded else count_grib2_messages(dest),
+            "records": records,
+            # The byte mode this file IS in, per file: a resume may keep
+            # files another fetch landed.
+            "mode": (mode_sink.get("mode") if downloaded else
+                     _hrrr_landed_mode(prior_entries.get(dest_name),
+                                       records, subset_ceiling[kind])),
             "seconds": round(time.perf_counter() - file_started, 6),
             # Said, not inferred.  Without it `fetch_throughput` read
             # every HRRR fetch as zero downloads -- so a re-run that
@@ -6205,6 +6354,47 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
         products.append((hour, "atmosphere", atmosphere, atmosphere,
                          "wrfnat"))
         products.append((hour, "soil", pressure, soil, "wrfprs"))
+
+    # Settle each product's series mode before anything moves.  A series
+    # already whole on disk in one mode is reused as it is, whatever was
+    # asked (a uniform subset or whole-file series is what the bridge
+    # wants, and refetching it would buy nothing).  Otherwise the named
+    # mode wins; under 'auto' the files already here decide, and a mix
+    # of both goes whole, because a whole object carries every subset
+    # record.  A kept file of the other mode is set aside (nothing is
+    # deleted) and fetched again in the series' mode.
+    for kind in ("atmosphere", "soil"):
+        if force:
+            series_mode[kind] = lands
+            continue
+        members = [(hour, dest_name) for hour, of_kind, _source, dest_name,
+                   _product in products if of_kind == kind]
+        present = {dest_name: (hour, kept_mode(dest_name, kind))
+                   for hour, dest_name in members
+                   if (out / dest_name).exists()}
+        found = {landed for _hour, landed in present.values()
+                 if landed is not None}
+        settled = (len(present) == len(members) and len(found) == 1
+                   and all(name in prior_entries for name in present))
+        if settled:
+            target = next(iter(found))
+        elif lands is not None:
+            target = lands
+        elif len(found) == 1:
+            target = next(iter(found))
+        else:
+            target = "full-file" if found else None
+        series_mode[kind] = target
+        if target is None:
+            continue
+        for dest_name, (hour, landed) in present.items():
+            if landed is not None and landed != target:
+                _quarantine_rejected(
+                    out / dest_name, progress,
+                    f"hrrr f{hour:02d} {kind} ({landed} file kept from an "
+                    f"earlier fetch; this series is {target}, and "
+                    "hrrr_grib2_bridge refuses a series whose hours carry "
+                    f"different record sets; fetching it again as {target})")
 
     def hour_checkpoint(index: int, entry: dict) -> None:
         # Checkpoint per completed hour, as GFS already did.  Publishing
@@ -6261,7 +6451,23 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
         finally:
             monitor.close()
         pool_summary.update(receipt)
-    return publish_manifest(hours)
+    manifest = publish_manifest(hours)
+    # Said here, not 80-146 s into the preparation: under 'auto' the
+    # probe picks per file, and the Python transport cannot take a whole
+    # file again, so a series can still land mixed.  The receipt above is
+    # published, so the remedy resumes rather than refetching.
+    mixed: dict[str, dict] = {}
+    for kind in ("atmosphere", "soil"):
+        modes: dict[str, list[str]] = {}
+        for item in files:
+            if (item["role"] == kind
+                    and item.get("mode") in HRRR_LANDED_MODES):
+                modes.setdefault(item["mode"], []).append(item["name"])
+        if len(modes) > 1:
+            mixed[kind] = modes
+    if mixed:
+        raise ValueError(_hrrr_mixed_series_refusal(out, mixed))
+    return manifest
 
 
 # ---------------------------------------------------------------------------
@@ -8256,6 +8462,12 @@ FETCH_HINT_ROWS = key_rows(
     KeyRow("retrieve", "boolean", False,
            "ERA5 only: download and verify now instead of writing a "
            "retrieval template"),
+    KeyRow("mode", "string", None,
+           "the byte transport, the value `gpuwm fetch --mode` takes: "
+           "'full-file', 'idx-subset' or 'auto'; absent keeps the fetch "
+           "default (whole files).  Lets the preparation route's own fetch "
+           "take the .idx-selected records, as `gpuwm fetch --mode "
+           "idx-subset` does"),
     KeyRow("transport", "string", None,
            "the one host of the source's endpoint ladder to download "
            "from, the value `gpuwm fetch --transport` takes; absent walks "
@@ -8387,6 +8599,9 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
     unknown = sorted(set(table) - FETCH_HINT_KEYS)
     if unknown:
         raise ValueError(f"unknown key(s) {unknown} in {prefix}; known keys: {sorted(FETCH_HINT_KEYS)}")
+    if table.get("mode") is not None and table["mode"] not in FETCH_MODES:
+        raise ValueError(f"mode = {table['mode']!r} in {prefix} is not a fetch mode; "
+                         f"what to do: write one of {', '.join(repr(m) for m in FETCH_MODES)}.")
     from gpuwm.initial_source import boundary_fetch_request
     table = boundary_fetch_request(table)
     # Common spellings precede every source, product and local-input branch.

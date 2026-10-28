@@ -215,6 +215,9 @@
     },
     "msl": {
       "units": "Pa"
+    },
+    "mslp": {
+      "units": "Pa"
     }
   },
   "coordinates": {
@@ -982,7 +985,8 @@
         {
           "format": "netcdf",
           "name": [
-            "msl"
+            "msl",
+            "mslp"
           ]
         }
       ],

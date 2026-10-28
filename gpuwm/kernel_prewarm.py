@@ -813,6 +813,15 @@ def main(argv=None) -> int:
     # config is hash-bound to its physics, the profile only names it.
     parser.add_argument("--physics-profile", default=None)
     args = parser.parse_args(argv)
+    # gpuwm go stops a child that has no result 30 s into the forecast stage
+    # (go_cli._stop_kernel_prewarm): SIGUSR1 first writes every thread's stack to
+    # this log, so a stuck warm-up names where it stopped.
+    try:
+        import faulthandler
+        import signal
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
+    except (AttributeError, ValueError, OSError):  # no SIGUSR1 (Windows)
+        pass
     from gpuwm.experiment import load_experiment
     from gpuwm.local_gpu import no_local_gpu
 

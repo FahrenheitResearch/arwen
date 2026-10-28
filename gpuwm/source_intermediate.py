@@ -16,7 +16,10 @@ def register_cli(sub):
     parser.add_argument("--input", action="append", type=Path, required=True)
     parser.add_argument("--supplement", action="append", default=[], metavar="ROLE=FILE")
     parser.add_argument("--valid-time", required=True, help="frame time YYYY-MM-DDTHH:MM:SS")
-    parser.add_argument("--member")
+    parser.add_argument("--member", help="the frame's ensemble member (the GRIB member number the compose decodes) "
+                        "that the WPS export selects")
+    parser.add_argument("--member-identity", help="also seal --member into the input manifest under this identity "
+                        "policy (mapped_authoring); without it the member only selects the composed frame")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--work-dir", required=True, type=Path)
     parser.add_argument("--workers", type=int, default=4)
@@ -59,7 +62,12 @@ def main(args):
         args.work_dir / "inputs.json", mapping_path=authorities["mapping"],
         composition_path=authorities["composition"], primary_files=args.input,
         supplement_files=supplements, provenance_files=provenance,
-        contributing_mappings=contributors, member=args.member)
+        contributing_mappings=contributors,
+        # Breakage it prevents: --member alone always refused here ("member and member_identity are an atomic pair"),
+        # so no single GEFS member could reach hex through this door (hex TC init, 2026-10-27); the composed frame
+        # carries its own GRIB member number either way
+        member=args.member if getattr(args, "member_identity", None) else None,
+        member_identity=getattr(args, "member_identity", None))
     engine = require_engine()
     capabilities = subprocess.run([str(engine), "capabilities"], check=True,
                                   capture_output=True, text=True)

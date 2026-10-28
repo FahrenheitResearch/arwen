@@ -144,3 +144,46 @@ def test_a_hung_rw_soundings_is_killed_at_its_timeout(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="did not finish in 1 s"):
         soundings.write_columns(tmp_path, tmp_path / "columns", timeout=1)
     assert time.monotonic() - started < 30
+
+
+def test_frames_between_full_history_leads_are_not_attempted_and_said_once():
+    """Breakage (updraft factory, 2026-10-27): a `gpuwm go` HRRR-recipe member with full history every 3 h
+    (`[output] full_history_interval_s = 10800`, 15-min 2-D frames between) ran `rw_soundings --columns` on every
+    hourly between-frame and warned "column store not written: variable not found in WRF file: P" for each. The
+    store now takes the frames that carry the 3-D state, from the run's own [output] selection, and says so once."""
+    from datetime import datetime, timedelta
+    from types import SimpleNamespace
+
+    from gpuwm.io.history_selection import HistorySelection
+    from gpuwm.live_columns import StateFrames
+
+    output = HistorySelection.from_mapping({"full_history_interval_s": 10800.0, "between_preset": "minimal",
+                                            "between_history_add": ["REFL_10CM", "UP_HELI_MAX"]})
+    start = datetime(2022, 6, 15, 12)
+    exp = SimpleNamespace(output=output, start_time=start,
+                          domains=(SimpleNamespace(grid_id=1, output=None, start_time=None, quicklook_output=None),))
+    full = {start + timedelta(hours=h) for h in range(0, 25, 3)}
+    written, warned, reported = [], [], []
+
+    def writer(path, out, threads=None):      # rw_soundings --columns on what the frame really holds
+        if datetime.strptime(Path(path).name[11:], "%Y-%m-%d_%H_%M_%S") not in full:
+            raise RuntimeError("column store not written: variable not found in WRF file: P")
+        written.append(Path(path).name)
+        return [{"path": "x", "bytes": 1}]
+
+    live = LiveColumns(Path("/run/columns"), writer=writer, minutes=60, frames=StateFrames.for_experiment(exp),
+                       report=reported.append, warn=lambda code, message, **f: warned.append(message))
+    for quarter in range(24 * 4 + 1):
+        valid = start + timedelta(minutes=15 * quarter)
+        live.frame_committed(domain=1, valid_time=valid, path=frame(1, valid.strftime("%Y-%m-%d_%H_%M_%S")))
+    summary = live.stop()
+    assert warned == [] and not summary["failed"]
+    assert sorted(written) == sorted(f"wrfout_d01_{t:%Y-%m-%d_%H_%M_%S}" for t in full)
+    assert summary["skipped_without_state"] == 24 * 4 + 1 - len(full)
+    notes = [r for r in reported if r.get("event") == "state_frames_only"]
+    assert len(notes) == 1 and "every 10800 s" in notes[0]["note"]
+    # A selection that keeps the state on every frame decides nothing away, and an offline child's standing
+    # selection that sheds P is said the same way.
+    assert StateFrames.for_experiment(SimpleNamespace(output=HistorySelection(), start_time=start, domains=exp.domains))(
+        1, start + timedelta(hours=1), frame(1, "2022-06-15_13_00_00"))
+    assert not StateFrames.for_selection(HistorySelection(preset="minimal"))(3, None, frame(3, "2022-06-15_13_00_00"))

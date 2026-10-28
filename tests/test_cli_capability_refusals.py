@@ -691,3 +691,27 @@ def test_go_dry_run_is_not_refused_but_warns(monkeypatch):
     monkeypatch.setattr(caps, "is_installed", lambda module: module != "cupy")
     unmet = caps.missing(caps.COMMAND_REQUIREMENTS["go"])
     assert [item.module for item in unmet] == ["cupy"]
+
+
+@pytest.mark.parametrize("command", ["go", "ensemble"])
+def test_prepare_only_is_not_refused_for_the_forecast_runtime(
+        monkeypatch, capsys, tmp_path, command):
+    """`ensemble --prepare-only` prepares on the CPU, as `go --prepare-only` does.
+
+    Breakage it prevents: a DA warm-start box preparing an HRRR
+    time-lagged member roster (`gpuwm ensemble --source hrrr-native:6
+    ... --prepare-only`) without CuPy was refused at the front door
+    "this command needs cupy", although nothing it runs needs a card.
+    """
+
+    from gpuwm import capabilities as caps
+    from gpuwm import cli
+
+    monkeypatch.setattr(caps, "is_installed", lambda module: module != "cupy")
+    monkeypatch.setattr(cli, "_dispatch", lambda args: 0)
+    config = tmp_path / "ensemble.toml"
+    assert cli.main([command, str(config), "--prepare-only"]) == 0
+    assert "this command needs cupy" not in capsys.readouterr().err
+    # Without the flag the same command still refuses before any fetch.
+    assert cli.main([command, str(config)]) == 2
+    assert "this command needs cupy" in capsys.readouterr().err

@@ -1148,7 +1148,9 @@ class RRTMLongwaveRadiation:
                 bl_pbl_physics=getattr(cfg, "bl_pbl_physics", 0),
                 icloud_bl=(getattr(cfg, "icloud_bl", 0) if self.icloud == 1 else 0),
                 itimestep=(wrf_itimestep(state.elapsed_seconds, cfg.dt)
-                           if active_bl else 1))
+                           if active_bl else 1),
+                bl_mynn_version=getattr(cfg, "bl_mynn_version", "wrf_461"),
+                temperature=t_cols if active_bl else None)
             #  RRTMLWRAD's F_QI-absent branch (F:1929-1943), which moves
             #  QC into QI and QR into QS below 273.15 K, is deliberately
             #  not reproduced: it exists for schemes that do not carry

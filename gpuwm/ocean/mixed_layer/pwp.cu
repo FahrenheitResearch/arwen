@@ -96,14 +96,21 @@ extern "C" __global__ void pwp_column(
  const float *base,const float *zall,const float *trall,const float *srall,
  const float *hfx,const float *lh,const float *sw,const float *lw,const float *qfx,
  const float *ust,const float *ua,const float *va,const float *f,const float *land,
- float *tend,int *status,float dt,float stage_dt,float stbolt,int n){
+ const float *ice_mask,float *tend,int *status,float dt,float stage_dt,float stbolt,int coupled_ice,int n){
  int i=blockDim.x*blockIdx.x+threadIdx.x;if(i>=n||land[i]<=1.5f)return;
  float t[L],s[L],u[L],v[L],r[L],z[L],ri[L-1];
  for(int k=0;k<L;k++){int q=k*n+i;t[k]=base[q];s[k]=base[n*L+q];u[k]=base[2*n*L+q];v[k]=base[3*n*L+q];z[k]=zall[q];}
  float tr=trall[i],sr=srall[i],dr=sigma(tr,sr)+1000.f;
  float alpha=sigma(tr+0.5f,sr)-sigma(tr-0.5f,sr),beta=sigma(tr,sr+0.5f)-sigma(tr,sr-0.5f);
+ // Where the sea-ice step set this column's surface fluxes (ice present), it
+ // owns the surface energy balance and hands the ocean ICE_OCEAN_HEAT (its
+ // open-water flux, minus the ocean-to-ice heat flux, plus melt).
+ // reconcile_ocean applies that to the mixed layer, as the OML route replaces
+ // its surface flux; the atmospheric fluxes here would count the ice-covered
+ // surface twice and never take out the ice's heat. Ice-free water keeps them.
+ bool ice_owned=coupled_ice&&ice_mask[i]>0.f;
  // Incoming flux times absorption is finite even when GSW+GLW=0.
- for(int k=0;k<L;k++){
+ for(int k=0;k<L&&!ice_owned;k++){
   float z1=k?z[k-1]:0.f,dz=z[k]-z1;
   float heat=(z[k]/0.6f<70.f?sw[i]*(expf(-z1/0.6f)-expf(-z[k]/0.6f)):0.f)
             +(z[k]/20.f<70.f?lw[i]*(expf(-z1/20.f)-expf(-z[k]/20.f)):0.f);

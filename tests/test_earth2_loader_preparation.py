@@ -56,18 +56,17 @@ def request():
 
 def test_empty_preparation_needs_no_runtime_or_lock(monkeypatch):
     monkeypatch.setitem(sys.modules, "earth2studio", None)
-    import fcntl
-    monkeypatch.setattr(fcntl, "flock", lambda *_: pytest.fail("unused loader acquired a lock"))
+    monkeypatch.setattr(earth2_runner, "exclusive_lock", lambda *_: pytest.fail("unused loader acquired a lock"))
     with earth2_runner.loader_cache_lock({}):
         assert earth2_runner.prepare_loader_inputs({}) == []
 
 
 def test_model_without_loader_inputs_constructs_without_cache_lock(runtime, monkeypatch, tmp_path):
-    import fcntl
     import importlib.metadata
     monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "0")
     monkeypatch.setattr(importlib.metadata, "version", lambda _: "0.19.0")
-    monkeypatch.setattr(fcntl, "flock", lambda *_: pytest.fail("model without inputs acquired cache lock"))
+    monkeypatch.setattr(earth2_runner, "exclusive_lock",
+                        lambda *_: pytest.fail("model without inputs acquired cache lock"))
     for name in ("earth2studio.models.px", "earth2studio.run", "earth2studio.perturbation"):
         monkeypatch.setitem(sys.modules, name, ModuleType(name))
     sys.modules["earth2studio.perturbation"].Zero = object

@@ -67,7 +67,9 @@ def test_the_six_doors_are_bundled_on_demand_and_not_in_the_wheel():
         # 2.9.4 (PyPI per-file limit): verification and post-run doors no forecast reaches.
         | {"rw_hail", "rw_airnow", "rw_scoreboard", "rw_tc_fields", "rw_fire_indices"}
         # Post-2.9.4: native Rust coupled hydro output.
-        | {"rw_nextgen_output"})
+        | {"rw_nextgen_output"}
+        # 2.9.9 (PyPI per-file limit): the fixed-ladder probability renderer.
+        | {"rw_probgrid"})
 
 
 def test_every_stream_with_a_door_names_a_bundled_artifact():

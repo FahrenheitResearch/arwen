@@ -43,8 +43,11 @@ def test_analysis_can_be_the_recentered_base():
 def test_analysis_off_clock_knots_are_not_rounded_or_silently_dropped():
     with pytest.raises(ValueError, match="analysis valid-time knots"):
         singleton("era5", start=START + timedelta(hours=1))
-    with pytest.raises(ValueError, match="analysis window does not end"):
-        singleton("era5", hours=7)
+    # An end between analyses keeps its requested end and is bracketed by
+    # the next analysis, as the single-run door fetches it (U-E2).
+    bracketed = singleton("era5", hours=7)
+    assert bracketed.end == START + timedelta(hours=7)
+    assert bracketed.acquisition_window(bracketed.base) == (0, 12)
     # The hourly analysis row permits both same windows without a new path.
     assert singleton("era5-l137", start=START + timedelta(hours=1), hours=7).end.hour == 20
 
@@ -77,8 +80,8 @@ def test_new_analysis_cadence_is_adapter_metadata(monkeypatch):
     monkeypatch.setattr(source_adapters, "get_source_adapter",
                         lambda name: future if name == "future-analysis" else ordinary(name))
     assert singleton("future-analysis", hours=9).base.source == "future-analysis"
-    with pytest.raises(ValueError, match="analysis window does not end"):
-        singleton("future-analysis", hours=10)
+    bracketed = singleton("future-analysis", hours=10)
+    assert bracketed.acquisition_window(bracketed.base) == (0, 12)
 
 
 def test_forecast_window_still_emits_forecast_lead():

@@ -195,9 +195,7 @@ def gsd41_admitted(settings) -> bool:
     is no unless the domain runs the MYNN boundary layer
     (``bl_pbl_physics = 5``, the only reader of the key), and no wherever
     :func:`gpuwm.config.validate_run_config` refuses the generation, each
-    for the breakage that refusal names: radiation other than the legacy
-    RRTMG pair while ``icloud_bl > 0`` (only that pair merges the fork's
-    in-cloud QC_BL), ``spp_pbl = 1`` (the stochastic kernels are specialised
+    for the breakage that refusal names: ``spp_pbl = 1`` (the stochastic kernels are specialised
     from the v4.6.1 source) and an active ``bl_mynn_mixscalars = 1`` (the
     scalar plume transport carries the v4.6.1 cloud).  Filling the generation there
     would make the domain refuse its own load, so it keeps the v4.6.1 MYNN
@@ -205,9 +203,7 @@ def gsd41_admitted(settings) -> bool:
     the validator.
     """
     from types import SimpleNamespace
-    from gpuwm.config import (RRTMG_VARIANT_LEGACY, RunConfig,
-                              mynn_mixscalars_active,
-                              radiation_scheme_ids_from_settings)
+    from gpuwm.config import RunConfig, mynn_mixscalars_active
 
     def value(name):
         found = settings.get(name)
@@ -219,12 +215,9 @@ def gsd41_admitted(settings) -> bool:
             **{name: value(name) for name in (
                 "bl_mynn_mixscalars", "bl_pbl_physics", "mp_physics")})):
         return False
-    radiation = radiation_scheme_ids_from_settings(
-        {name: value(name)
-         for name in ("ra_physics", "ra_lw_physics", "ra_sw_physics")})
-    if int(value("icloud_bl")) > 0 and any(radiation):
-        return (radiation == (4, 4)
-                and value("ra_rrtmg_variant") == RRTMG_VARIANT_LEGACY)
+    # Radiation no longer decides it: every radiation coupling merges the
+    # fork's in-cloud QC_BL (U-E4 retired the legacy-RRTMG-only refusal in
+    # validate_run_config, and this restatement with it).
     return True
 
 

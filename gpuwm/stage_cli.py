@@ -474,6 +474,9 @@ def resolve_bundle(prepared_root: Path) -> dict:
         if document.is_file():
             break
     else:
+        continued = _continuation_head_bundle(root)
+        if continued is not None:
+            return continued
         raise StageRefusal(_unbindable_root_refusal(root))
     try:
         payload = json.loads(document.read_text(encoding="utf-8"))
@@ -507,6 +510,45 @@ def resolve_bundle(prepared_root: Path) -> dict:
         "domains": domains,
         "payload": payload,
     }
+
+
+def _continuation_head_bundle(root: Path) -> dict | None:
+    """A restored forcing prefix, bound at the head its descriptor pins.
+
+    A checkpoint taken while the boundaries were still streaming stores a
+    forcing PREFIX (``gpuwm.ingest.stream_resume seal-prefix``): the head,
+    every interval the restart needs, and ``continuation.json``, which pins
+    the head digest and every file's digest.  It has no seal document yet:
+    the continuation producer relays the later intervals into it and copies
+    the seal in last.  So it is bound exactly as the original chained
+    forecast was, at its head (``--prepared-head-sha256``).
+
+    THE BREAKAGE (run_515470d250a1060a, 2026-10-26, GFS streamed 3 km,
+    gpuwm 2.9.7): ``go --prepared-root PREFIX --restart`` refused such a
+    prefix as "carries none of proof.json, receipt.json", so a forecast
+    that failed mid-run, or a spot resume on a new box, could not continue
+    from its checkpoint.  The refusal's teeth are kept where they belong:
+    the prefix must pass its descriptor and file digests, and
+    :func:`resolve_head_bundle` (``bind_head``) still refuses a head whose
+    producer failed, was stopped or is silent, so a partial tree that no
+    live continuation is finishing is never run.
+
+    ``None`` when ``root`` carries no continuation descriptor.
+    """
+
+    from gpuwm.ingest.boundary_stream import BoundaryStreamError
+    from gpuwm.ingest.stream_resume import DESCRIPTOR_NAME, verify_prefix
+
+    if not (root / DESCRIPTOR_NAME).is_file():
+        return None
+    try:
+        descriptor, _head = verify_prefix(root)
+    except (BoundaryStreamError, OSError, ValueError, KeyError) as error:
+        raise StageRefusal(
+            f"{root} is a restored forcing prefix whose "
+            f"{DESCRIPTOR_NAME} does not verify ({error}), so its bytes are "
+            "not the ones the checkpoint bound and it must not be run") from None
+    return resolve_head_bundle(root, str(descriptor["head_sha256"]))
 
 
 def resolve_head_bundle(prepared_root: Path, head_sha256: str) -> dict:

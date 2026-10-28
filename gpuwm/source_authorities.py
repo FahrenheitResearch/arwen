@@ -288,8 +288,8 @@ _PACKAGED_PROFILES = MappingProxyType({
     "hrrr-native-grib2-v1": _profile(
         "rw-wps-hrrr-native-grib2", source_format="grib2",
         mapping="b8227dfb5a30165661f8268bd2b8b45d7040d9f71dd49103054df14f82320a0d",
-        composition="ec1ac78cf4e301863bd0b8e7099d265e73c700a00be5c1c759cfa80a04f1015c",
-        provenance="99c6f704b6c783bbd70672bcf2ecc23752a82a6d902a03f05b16c774d3ca4c77",
+        composition="3197e0372f333489cdfb017246cdf4809647229ffde97c8ec928639ee52daf87",
+        provenance="23f05eb17c5d3373c118df6d3ea84a97530f7e9c386bfae9ae37f34fffd44495",
         data_role="soil_surface_data",
         provenance_role="soil_surface_provenance",
         contributing_provenances={
@@ -448,7 +448,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "earth2-stormcast-hrrr-netcdf-v1": _profile(
         "rw-wps-earth2-stormcast-hrrr-netcdf",
         source_format="netcdf",
-        mapping="e39aff8445c099fbdc27d87e391bf5d45a6abeb072629a76e2765cd4e34c3c7a",
+        mapping="bd9435782a2f7e0315419a89f2b584ef9d663ee1bd4833fa02d5a0215a3f997c",
         composition="41c3cefb12cda90c50f19777a5e35238ae93eca19e5f32f1686d0214061b0dd3",
         provenance="c49ac5b2da4e02631d44d61bb210f63e992f8c243388937f57f2695e314598f1",
         data_role="physical_analysis_surface_data",
@@ -463,7 +463,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "earth2-stormcast-conus-hrrr-netcdf-v1": _profile(
         "rw-wps-earth2-stormcast-conus-hrrr-netcdf",
         source_format="netcdf",
-        mapping="a32f9ac79ea23ef4bb3119f0f66252ad29ab9dd7e540199bfc5a2b4fd0ccfd28",
+        mapping="e54a5a39bf69a38fdefdbc14afb3c3db45811d053e97f4ff75179cebd845a89d",
         composition="41c3cefb12cda90c50f19777a5e35238ae93eca19e5f32f1686d0214061b0dd3",
         provenance="20e1eeb5e9ec1bac254fb77e3ba670b8e961ba6d58ba6845c9e4bfe6af3d1847",
         data_role="physical_analysis_surface_data",
@@ -478,7 +478,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "earth2-pl13-q-netcdf-v1": _profile(
         "rw-wps-earth2-pl13-q-netcdf",
         source_format="netcdf",
-        mapping="a37c5803570a79994caf7d65fe3bbf376e9f5db0b3eb298e539f304daffec220",
+        mapping="814639a651cb44d861489c46c583921ccccccfac51a06cd1a3c390b8ef4441b2",
         composition="8b88da8dd45e6d2067babdd3706df8b3c11321fcc5d7ea02a479360b3564871b",
         provenance="ab7aa121392c15667befc84351431431c49604055705e711e70d5f3e89b1a7cb",
         data_role="physical_analysis_surface_data",
@@ -493,7 +493,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "earth2-sparse-r-netcdf-v1": _profile(
         "rw-wps-earth2-sparse-r-netcdf",
         source_format="netcdf",
-        mapping="904c67a59b52f956e50fb9aac670685d07008529234009a2f5dba294d5522c69",
+        mapping="e7207f7f3819cb6cf6b0e312f85fdf17fbc7db628762fda0ac04aec3e077cfaa",
         composition="1b028d4da5d95189344c49b215b9fb303000767d7464a9f23af6cf1e5eb11cd6",
         provenance="0204d362fe49f9d0d2be9b8358f8245798654771a2a13f1cabc9ea57fd163b08",
         data_role="physical_analysis_surface_data",
@@ -508,7 +508,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "earth2-pl13-q-gfs-netcdf-v1": _profile(
         "rw-wps-earth2-pl13-q-gfs-netcdf",
         source_format="netcdf",
-        mapping="8ca7b375ab6d97134256da21ff68a53c16a111d7b0ee851e74c7abc46ab103da",
+        mapping="7ce88cdbf032252329e166ef2a7c465de93a9dbdfab076d80fafd32bbc59e9f2",
         composition="3f5ce2527fb36a2d85db1d0f1d46a55c81e6dcca01a0ec3aff7fa2e533313b11",
         provenance="80777b61866d834251b9ca7985f45ea828b2c2b2100167b189048f2202173ddf",
         data_role="physical_analysis_surface_data",
@@ -523,7 +523,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "earth2-pl13-q-ifs-netcdf-v1": _profile(
         "rw-wps-earth2-pl13-q-ifs-netcdf",
         source_format="netcdf",
-        mapping="096759cd7c8e239265d7a6c9c9557a42427f95ee751d2c5dd531fbba265ff637",
+        mapping="3880baab923f8ca07bbb059795a086142fd76f26a5258e9e96f2b241061ef8d6",
         composition="4ceec22d014ece8c8dc663e1f977ccc7ca193223ae225371ed033e71a84fac8b",
         provenance="72e860df39577f20a196ee02b48ecd0ca5c802522af4f1ab3bc7b4aee8bd03cc",
         data_role="physical_analysis_surface_data",
@@ -538,7 +538,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "earth2-sparse-r-gfs-netcdf-v1": _profile(
         "rw-wps-earth2-sparse-r-gfs-netcdf",
         source_format="netcdf",
-        mapping="d7fd55289ea6434a6e4b4bd3a2029b56cf361995f13964df3575e6c30c6a569b",
+        mapping="36bbacf994db8edbea01b91d1c4532a9891837e88acf55ffdd48cd262bf5f56a",
         composition="f8ca19754a1e5cec8f5878975df6cccba3ed1a1e175ff8c7a8560cf27e45c933",
         provenance="2e29f28ea798f1e67e334ba0e29f43875bb3b2097391ab463485573f0a21ade1",
         data_role="physical_analysis_surface_data",
@@ -553,7 +553,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "earth2-sparse-r-ifs-netcdf-v1": _profile(
         "rw-wps-earth2-sparse-r-ifs-netcdf",
         source_format="netcdf",
-        mapping="8af3a759d0132e75a099bc76bd860bc25c56aaef022d8bd1bf0668fcf3e3ca4a",
+        mapping="baf137c563208c250ee9f7aa13d9fdc1519830e668dd47afa4a65c17a8fddbfc",
         composition="9fd1eae2df0c6ec3da2c4dfe51228816ab0450ca50f5e52b00bfcd22b4fcfa92",
         provenance="cbb4079023cbb7e35a8eb17c0b9814ec76e132d37c0e62b7c85afae8ce3d53d6",
         data_role="physical_analysis_surface_data",
@@ -568,7 +568,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "earth2-pl13-rh-netcdf-v1": _profile(
         "rw-wps-earth2-pl13-rh-netcdf",
         source_format="netcdf",
-        mapping="f8a23070eb0bffeeb723c3fddeb1e1ba9f2300f05fe2a72cfb605c3f99f164d9",
+        mapping="abceb83c784e6749fd650af10463b2b23bee32f86b1b5829d71fd60fae9c773d",
         composition="8b88da8dd45e6d2067babdd3706df8b3c11321fcc5d7ea02a479360b3564871b",
         provenance="e7e4ead6b5e269ebbba8682461f37815bffe9b4804607af1526b242006fe65d9",
         data_role="physical_analysis_surface_data",
@@ -583,7 +583,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "earth2-pl13-rh-gfs-netcdf-v1": _profile(
         "rw-wps-earth2-pl13-rh-gfs-netcdf",
         source_format="netcdf",
-        mapping="c59a227cd8cdb3cf4c2387b50c08aa5374a082e897a0723d411d9ada75e61873",
+        mapping="3113c80d149eec08dd3747a2955bd281c2746fbe394da41d584356253c458dad",
         composition="3f5ce2527fb36a2d85db1d0f1d46a55c81e6dcca01a0ec3aff7fa2e533313b11",
         provenance="3df59fd76ffcac01aa98d431fa77cd591b951012b9e9856f28af9bdc5db92e7e",
         data_role="physical_analysis_surface_data",
@@ -598,7 +598,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "earth2-pl13-rh-ifs-netcdf-v1": _profile(
         "rw-wps-earth2-pl13-rh-ifs-netcdf",
         source_format="netcdf",
-        mapping="69343e99ec2647574ce8f0c22d5a44987b6f023a13eb91cd15ac6de8e674196b",
+        mapping="129661c93e1ba1017ca3030db89551b8d7144b4dd4d1fbd5a4fd6eacb55c5685",
         composition="4ceec22d014ece8c8dc663e1f977ccc7ca193223ae225371ed033e71a84fac8b",
         provenance="1dd4542a617245af8640da504f5a9a31d2d10bc72fbd9834aeaa71923e36c67e",
         data_role="physical_analysis_surface_data",

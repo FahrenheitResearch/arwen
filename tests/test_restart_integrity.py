@@ -129,7 +129,7 @@ def test_two_writers_of_one_checkpoint_name_do_not_share_a_scratch_file(
     valid gpuwmrst name"; the concurrency case defeated exactly that.
 
     The interleave is made deterministic rather than raced: the peer
-    writer runs to completion inside the first writer's ``np.savez``,
+    writer runs to completion inside the first writer's archive write,
     while the first still holds its scratch file open.
 
     RED before the per-writer name: the peer's ``os.replace`` renames the
@@ -147,19 +147,19 @@ def test_two_writers_of_one_checkpoint_name_do_not_share_a_scratch_file(
     _fill_serialized(peer, seed=20260908)
 
     target = tmp_path / restart.restart_filename(datetime(1974, 4, 3, 12))
-    savez = np.savez
+    write_npz = restart.write_npz
     peer_published = []
     interleaved = []
 
-    def _let_the_peer_publish_mid_write(stream, **payload):
-        savez(stream, **payload)
+    def _let_the_peer_publish_mid_write(path, payload):
+        write_npz(path, payload)
         if not interleaved:
-            interleaved.append(True)     # the peer's own savez is not this
+            interleaved.append(True)     # the peer's own archive write is not this
             peer_published.append(restart.write_restart(target, peer, cfg))
 
-    monkeypatch.setattr(restart.np, "savez", _let_the_peer_publish_mid_write)
+    monkeypatch.setattr(restart, "write_npz", _let_the_peer_publish_mid_write)
     restart.write_restart(target, first, cfg)
-    monkeypatch.setattr(restart.np, "savez", savez)
+    monkeypatch.setattr(restart, "write_npz", write_npz)
 
     assert peer_published, "the interleave never ran, so this measures nothing"
     # The last publisher wins, and what it published is ITS OWN complete

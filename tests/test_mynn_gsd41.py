@@ -39,15 +39,16 @@ def test_default_generation_is_wrf_461_and_names_are_closed():
         validate_run_config(_cfg(bl_mynn_gsd41_unsquared_qtke=1))
 
 
-def test_gsd41_cloud_needs_the_legacy_rrtmg_merge_and_the_main_mass_flux():
+def test_gsd41_cloud_runs_on_every_radiation_and_needs_the_main_mass_flux():
     legacy = dict(bl_pbl_physics=5, sf_sfclay_physics=5, ra_physics=4,
                   ra_rrtmg_variant="rrtmg_legacy", bl_mynn_version="gsd_41")
     validate_run_config(_cfg(**legacy))
-    with pytest.raises(ValueError, match="1/CLDFRA_BL times too thick"):
-        validate_run_config(_cfg(**dict(legacy,
-                                        ra_rrtmg_variant="rte-rrtmgp")))
-    validate_run_config(_cfg(**dict(legacy, bl_mynn_version="wrf_461",
-                                    ra_rrtmg_variant="rte-rrtmgp")))
+    # U-E4: every radiation coupling carries the gsd_41 merge
+    # (test_gsd41_merge_matches_the_legacy_adapter_rule below).
+    validate_run_config(_cfg(**dict(legacy, ra_rrtmg_variant="rte-rrtmgp")))
+    for pair in ((5, 5), (1, 1)):
+        validate_run_config(_cfg(**dict(legacy, ra_physics=0, ra_lw_physics=pair[0],
+                                        ra_sw_physics=pair[1])))
     with pytest.raises(ValueError, match="sibling unit"):
         validate_run_config(_cfg(**dict(legacy, bl_mynn_mixscalars=1,
                                         mp_physics=28)))
@@ -565,3 +566,78 @@ def test_gsd41_turbulence_matches_its_fortran():
     # lane/mynn-exact: 0 with the fork's a2den algebra, --fmad=false and the
     # glibc 2.39 rebuild of turbulence2-gsd41-sq.csv.
     assert max(worst.values()) == 0, worst
+
+
+# ---------------------------------------------------------------------------
+# U-E4: the gsd_41 radiation merge on every coupling.  The legacy RRTMG
+# adapter's kernel (rla_mynn_gsd41) is the reference; the shared merge every
+# other radiation coupling calls (gpuwm.core.mynn_radiation) must match it.
+# ---------------------------------------------------------------------------
+
+def _gsd41_columns(xp):
+    rng = np.random.default_rng(41)
+    n = 4096
+    f = np.float32
+    qc = np.where(rng.random(n) < 0.5, f(0.0), rng.random(n).astype(f) * f(2e-6))
+    qi = np.where(rng.random(n) < 0.5, f(0.0), rng.random(n).astype(f) * f(2e-8))
+    qc_bl = rng.random(n).astype(f) * f(1e-3)
+    qi_bl = rng.random(n).astype(f) * f(1e-4)
+    cldfra_bl = np.where(rng.random(n) < 0.2, f(0.0005), rng.random(n).astype(f))
+    t = (f(230.0) + rng.random(n).astype(f) * f(50.0)).astype(f)
+    cldfra = rng.random(n).astype(f)
+    return [xp.asarray(a) for a in (qc, qi, qc_bl, qi_bl, cldfra_bl, t, cldfra)]
+
+
+def _reference_gsd41(qc, qi, qc_bl, cldfra_bl, t, cldfra, first_step):
+    """rla_mynn_gsd41, element by element in FP32."""
+    f = np.float32
+    qc, qi, cldfra = qc.copy(), qi.copy(), cldfra.copy()
+    for i in range(qc.size):
+        fb = cldfra_bl[i]
+        if not first_step or fb > f(0.001):
+            cldfra[i] = fb
+        if qc[i] < f(1e-6) and qi[i] < f(1e-8) and fb > f(0.001):
+            liq = min(f(1.0), max(f(0.0), f(f(t[i] - f(254.0)) / f(15.0))))
+            qc[i] = f(qc[i] + f(f(qc_bl[i] * liq) * fb))
+            qi[i] = f(qi[i] + f(f(qc_bl[i] * f(f(1.0) - liq)) * fb))
+    return qc, qi, cldfra
+
+
+@pytest.mark.parametrize("itimestep", [1, 7])
+def test_gsd41_merge_matches_the_legacy_adapter_rule(itimestep):
+    from gpuwm.core.mynn_radiation import merge_mynn_bl_clouds, mynn_bl_cloud_supplied
+    qc, qi, qc_bl, qi_bl, cldfra_bl, t, cldfra = _gsd41_columns(np)
+    want = _reference_gsd41(qc, qi, qc_bl, cldfra_bl, t, cldfra, itimestep == 1)
+    liquid, ice = mynn_bl_cloud_supplied(qc, qi, qc_bl=qc_bl, qi_bl=qi_bl, cldfra_bl=cldfra_bl,
+                                         bl_pbl_physics=5, icloud_bl=1, bl_mynn_version="gsd_41",
+                                         temperature=t)
+    got = merge_mynn_bl_clouds(qc.copy(), qi.copy(), cldfra.copy(), qc_bl=qc_bl, qi_bl=qi_bl,
+                               cldfra_bl=cldfra_bl, bl_pbl_physics=5, icloud_bl=1,
+                               itimestep=itimestep, bl_mynn_version="gsd_41", temperature=t)
+    for a, b in zip(got, want):
+        assert a.tobytes() == b.tobytes()
+    assert np.array_equal(liquid, got[0] != qc) and np.array_equal(ice, got[1] != qi)
+    # The v4.6.1 merge is untouched by the selector's default.
+    v461 = merge_mynn_bl_clouds(qc.copy(), qi.copy(), cldfra.copy(), qc_bl=qc_bl, qi_bl=qi_bl,
+                                cldfra_bl=cldfra_bl, bl_pbl_physics=5, icloud_bl=1, itimestep=itimestep)
+    assert not np.array_equal(v461[0], got[0])
+
+
+@requires_gpu
+@pytest.mark.parametrize("itimestep", [1, 7])
+def test_gsd41_merge_is_the_legacy_adapter_kernel_on_device(itimestep):
+    import cupy as cp
+    from gpuwm.core.mynn_radiation import merge_mynn_bl_clouds
+    from gpuwm.core.rrtmg_legacy import _adapter_kernel
+    qc, qi, qc_bl, qi_bl, cldfra_bl, t, cldfra = _gsd41_columns(cp)
+    n = qc.size
+    kqc, kqi, kcf = qc.copy(), qi.copy(), cldfra.copy()
+    null = np.uint64(0)
+    _adapter_kernel("rla_mynn_gsd41")(((n + 127) // 128,), (128,), (
+        np.int64(n), kqc, kqi, qc_bl, cldfra_bl, t, kcf, np.int32(1 if itimestep == 1 else 0),
+        null, null, np.int32(0), np.float32(1e-6), np.float32(1e-8), np.float32(0.001)))
+    got = merge_mynn_bl_clouds(qc.copy(), qi.copy(), cldfra.copy(), qc_bl=qc_bl, qi_bl=qi_bl,
+                               cldfra_bl=cldfra_bl, bl_pbl_physics=5, icloud_bl=1,
+                               itimestep=itimestep, bl_mynn_version="gsd_41", temperature=t)
+    for a, b in zip(got, (kqc, kqi, kcf)):
+        assert cp.asnumpy(a).tobytes() == cp.asnumpy(b).tobytes()

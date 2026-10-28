@@ -452,7 +452,9 @@ class ColumnTableRadiation:
             qi_bl=grid(fields['qi_bl']) if active_bl else None,
             cldfra_bl=grid(fields['cldfra_bl']) if active_bl else None,
             bl_pbl_physics=getattr(cfg,'bl_pbl_physics',0),icloud_bl=getattr(cfg,'icloud_bl',0),
-            itimestep=wrf_itimestep(state.elapsed_seconds,cfg.dt) if active_bl else 1)
+            itimestep=wrf_itimestep(state.elapsed_seconds,cfg.dt) if active_bl else 1,
+            bl_mynn_version=getattr(cfg,'bl_mynn_version','wrf_461'),
+            temperature=t if active_bl else None)
         values,direct_gsfc=radiation_radius_provider_fields(
             state,int(cfg.mp_physics),getattr(cfg,'use_mp_re',1))
         radii=[zeros if value is None else grid(value) if direct_gsfc else

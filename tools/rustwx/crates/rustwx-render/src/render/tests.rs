@@ -1122,6 +1122,98 @@ fn projected_pixel_bilinear_rejects_projected_seam_jumps() {
     assert!(projected_pixel_bilinear(&pixel_points, 2, 2, 0.5, 0.5).is_none());
 }
 
+fn isobar_cell_overlay(data: Vec<f64>, nx: usize, ny: usize, levels: Vec<f64>) -> ContourOverlay {
+    ContourOverlay {
+        data,
+        ny,
+        nx,
+        levels,
+        color: Rgba::BLACK,
+        width: 1,
+        labels: false,
+        show_extrema: false,
+        pattern: crate::request::ContourLinePattern::Solid,
+        major_every: None,
+        major_width: None,
+    }
+}
+
+/// U-E9 (2.9.9 R10 look): a small closed isobar on the R11 d01 MSLP/10 m
+/// winds map had a one-cell gap with nothing in it.  The ring passed exactly
+/// through a grid node (the node's MSLP equalled the 2 hPa level), the cell
+/// counted that corner as a crossing on both of its edges, found three
+/// points, and drew only the first pair: the corner to itself.  The segment
+/// from that corner to the opposite edge was never drawn.
+#[test]
+fn contour_through_a_grid_node_keeps_the_segment_to_the_opposite_edge() {
+    let layout = contour_test_layout();
+    // Corners in walk order: c0 (0,0) below, c1 (1,0) exactly ON 1016,
+    // c2 (1,1) and c3 (0,1) above.  The isobar runs from c1 to the c3-c0 edge.
+    let overlay = isobar_cell_overlay(vec![1015.5, 1016.0, 1016.4, 1016.3], 2, 2, vec![1016.0]);
+
+    let (pts, count, _) =
+        contour_cell_intersections(&layout, &overlay, None, 0, 1, 1016.0).expect("the cell is crossed");
+    assert_eq!(count, 2, "a node on the level is one crossing, not two: {pts:?}");
+    let (c0, c1, _c2, c3) = contour_cell_corners(&layout, &overlay, None, 0, 1).unwrap();
+    let t = (1016.0 - 1016.4) / (1015.5 - 1016.4);
+    let a = (c3.0 + (c0.0 - c3.0) * t, c3.1 + (c0.1 - c3.1) * t);
+    let close = |p: (f64, f64), q: (f64, f64)| (p.0 - q.0).abs() < 1e-9 && (p.1 - q.1).abs() < 1e-9;
+    assert!(close(pts[0], c1) && close(pts[1], a), "segment is c1 -> the c3-c0 edge: {pts:?}");
+
+    // And it is drawn: the middle of that segment is inked.
+    let mut img = blank_test_image();
+    let mut labels = ContourLabelPlacer::default();
+    draw_contours_bucketed(&mut img, &layout, &overlay, None, None, &mut labels, 1);
+    let mid = ((c1.0 + a.0) * 0.5, (c1.1 + a.1) * 0.5);
+    let inked = (-1..=1).any(|dy| {
+        (-1..=1).any(|dx| {
+            let x = (mid.0.round() as i32 + dx) as u32;
+            let y = (mid.1.round() as i32 + dy) as u32;
+            img.get_pixel(x, y).0 != [255, 255, 255, 255]
+        })
+    });
+    assert!(inked, "no ink at the middle of the isobar segment {mid:?}");
+}
+
+/// Every cell of a field whose nodes often sit exactly on a level (whole
+/// hPa values, 2 hPa levels) has 0, 2 or 4 crossings, never 3.
+#[test]
+fn contour_cells_never_have_an_odd_crossing_count_when_nodes_sit_on_levels() {
+    let layout = contour_test_layout();
+    let (nx, ny) = (9usize, 9usize);
+    let data: Vec<f64> = (0..ny)
+        .flat_map(|j| (0..nx).map(move |i| 1010.0 + ((i * 7 + j * 3) % 9) as f64))
+        .collect();
+    let levels: Vec<f64> = (0..10).map(|k| 1008.0 + 2.0 * k as f64).collect();
+    let overlay = isobar_cell_overlay(data, nx, ny, levels.clone());
+    let mut on_level_cells = 0usize;
+    for j in 0..ny - 1 {
+        for i in 0..nx - 1 {
+            let base = j * nx + i;
+            for &level in &levels {
+                let corners = [
+                    overlay.data[base],
+                    overlay.data[base + 1],
+                    overlay.data[base + nx + 1],
+                    overlay.data[base + nx],
+                ];
+                if corners.iter().any(|v| *v == level) {
+                    on_level_cells += 1;
+                }
+                if let Some((pts, count, _)) =
+                    contour_cell_intersections(&layout, &overlay, None, base, 1, level)
+                {
+                    assert!(
+                        count == 2 || count == 4,
+                        "cell ({i},{j}) level {level}: {count} crossings {pts:?}"
+                    );
+                }
+            }
+        }
+    }
+    assert!(on_level_cells > 20, "the field must exercise nodes on levels ({on_level_cells})");
+}
+
 #[test]
 fn levels_are_sorted_finite_rejects_unsorted_or_nan_levels() {
     assert!(levels_are_sorted_finite(&[1.0, 2.0, 3.0]));

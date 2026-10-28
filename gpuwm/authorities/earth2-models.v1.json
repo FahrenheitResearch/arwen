@@ -23,6 +23,14 @@
         "earth2studio_class": "HRRR",
         "keyless": true,
         "note": "Public HRRR native grid, selected by the model row initial_condition_source"
+      },
+      "ifs": {
+        "earth2studio_class": "IFS",
+        "keyless": true,
+        "kwargs": {
+          "source": "aws"
+        },
+        "note": "ECMWF IFS HRES analysis from ECMWF open data on AWS (0.25 degree): carries the skin temperature, soil temperature and moisture and total column water the AIFS rows take as input, which the GFS analysis does not"
       }
     },
     "install_recipes": {
@@ -2893,7 +2901,8 @@
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
-          }
+          },
+          "amplitude_scale": "channel_spatial_std"
         }
       },
       "ai_cost": "unmeasured"
@@ -3019,7 +3028,8 @@
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
-          }
+          },
+          "amplitude_scale": "channel_spatial_std"
         }
       },
       "ai_cost": "unmeasured"
@@ -3133,10 +3143,12 @@
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
-          }
+          },
+          "amplitude_scale": "channel_spatial_std"
         }
       },
-      "ai_cost": "unmeasured"
+      "ai_cost": "unmeasured",
+      "runtime_refusal": "The pinned MIT revision of microsoft/aurora (a96afd7) has no static-npy/aurora-0.25-static-{z,slt,lsm}.npy, which Earth2Studio 0.19's Aurora loader opens; they exist only on refs/pr/1, whose card declares CC BY-NC-SA 4.0. Use aurora15 (Aurora 1.5, MIT, same repository)."
     },
     "fengwu": {
       "name": "FengWu",
@@ -3246,7 +3258,8 @@
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
-          }
+          },
+          "amplitude_scale": "channel_spatial_std"
         }
       },
       "ai_cost": "unmeasured"
@@ -3403,7 +3416,9 @@
       "licence_class": "permissive",
       "profile": "earth2-pl13-q-netcdf-v1",
       "contract_source": "earth2studio/models/px/aifs.py (0.19.0)",
-      "donor_policy": "ifs",
+      "donor_policy": {
+        "forecast": "ifs"
+      },
       "members": {
         "kind": "perturbation",
         "population": 1000,
@@ -3413,10 +3428,12 @@
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
-          }
+          },
+          "amplitude_scale": "channel_spatial_std"
         }
       },
-      "ai_cost": "unmeasured"
+      "ai_cost": "unmeasured",
+      "initial_condition_source": "ifs"
     },
     "fuxi": {
       "name": "FuXi",
@@ -3527,7 +3544,8 @@
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
-          }
+          },
+          "amplitude_scale": "channel_spatial_std"
         }
       },
       "ai_cost": "unmeasured"
@@ -4058,7 +4076,8 @@
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
-          }
+          },
+          "amplitude_scale": "channel_spatial_std"
         }
       },
       "ai_cost": "unmeasured"
@@ -4227,7 +4246,9 @@
       "licence_class": "permissive",
       "profile": "earth2-pl13-q-netcdf-v1",
       "contract_source": "earth2studio/models/px/aifs2.py (0.19.0)",
-      "donor_policy": "ifs",
+      "donor_policy": {
+        "forecast": "ifs"
+      },
       "members": {
         "kind": "perturbation",
         "population": 1000,
@@ -4237,10 +4258,12 @@
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
-          }
+          },
+          "amplitude_scale": "channel_spatial_std"
         }
       },
-      "ai_cost": "unmeasured"
+      "ai_cost": "unmeasured",
+      "initial_condition_source": "ifs"
     },
     "aifs-ens": {
       "name": "AIFSENS",
@@ -4390,7 +4413,9 @@
         "seed": 0,
         "rollout": "iterator_preserves_rng_state"
       },
-      "donor_policy": "ifs",
+      "donor_policy": {
+        "forecast": "ifs"
+      },
       "members": {
         "kind": "native_ensemble",
         "population": 1000,
@@ -4423,7 +4448,8 @@
         "ANEMOI_INFERENCE_NUM_CHUNKS": "16"
       },
       "stochastic": true,
-      "ai_cost": "unmeasured"
+      "ai_cost": "unmeasured",
+      "initial_condition_source": "ifs"
     },
     "aifs2-ens": {
       "name": "AIFS2ENS",
@@ -4594,7 +4620,9 @@
         "seed": 0,
         "rollout": "iterator_preserves_rng_state"
       },
-      "donor_policy": "ifs",
+      "donor_policy": {
+        "forecast": "ifs"
+      },
       "members": {
         "kind": "native_ensemble",
         "population": 1000,
@@ -4608,7 +4636,8 @@
           "parameters": {}
         }
       },
-      "ai_cost": "unmeasured"
+      "ai_cost": "unmeasured",
+      "initial_condition_source": "ifs"
     },
     "aurora15": {
       "name": "Aurora1p5",
@@ -4725,7 +4754,19 @@
         "gated": false,
         "account_needed": false,
         "licence": "MIT",
-        "uri": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab"
+        "uri": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab",
+        "files": [
+          {
+            "path": "aurora-0.25-v1.5.ckpt",
+            "size": 5030469281,
+            "sha256": "25aaf2bccc04e2df30006ebc539ebb2f9aee5ac64cbfbe814f6c0a441850d285"
+          },
+          {
+            "path": "aurora-0.25-v1.5-static.pickle",
+            "size": 149508612,
+            "sha256": "c38a44e3970e876f2880cbbda3f3a521ddedba1a468bca5ccd5313ece7e6d0bd"
+          }
+        ]
       },
       "licence_class": "permissive",
       "profile": "earth2-pl13-q-netcdf-v1",
@@ -4825,7 +4866,8 @@
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
-          }
+          },
+          "amplitude_scale": "channel_spatial_std"
         }
       },
       "ai_cost": "unmeasured"
@@ -4945,7 +4987,19 @@
         "gated": false,
         "account_needed": false,
         "licence": "MIT",
-        "uri": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab"
+        "uri": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab",
+        "files": [
+          {
+            "path": "aurora-0.25-v1.5.ckpt",
+            "size": 5030469281,
+            "sha256": "25aaf2bccc04e2df30006ebc539ebb2f9aee5ac64cbfbe814f6c0a441850d285"
+          },
+          {
+            "path": "aurora-0.25-v1.5-static.pickle",
+            "size": 149508612,
+            "sha256": "c38a44e3970e876f2880cbbda3f3a521ddedba1a468bca5ccd5313ece7e6d0bd"
+          }
+        ]
       },
       "licence_class": "permissive",
       "profile": "earth2-pl13-q-netcdf-v1",
@@ -5045,7 +5099,8 @@
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
-          }
+          },
+          "amplitude_scale": "channel_spatial_std"
         }
       },
       "ai_cost": "unmeasured"
@@ -5165,7 +5220,19 @@
         "gated": false,
         "account_needed": false,
         "licence": "MIT",
-        "uri": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab"
+        "uri": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab",
+        "files": [
+          {
+            "path": "aurora-0.25-v1.5-ensemble.ckpt",
+            "size": 5040967051,
+            "sha256": "d99b9192a39a32d79ee5ffa2bbebefce8abaff1c395399cc07cc72132bef3b71"
+          },
+          {
+            "path": "aurora-0.25-v1.5-static.pickle",
+            "size": 149508612,
+            "sha256": "c38a44e3970e876f2880cbbda3f3a521ddedba1a468bca5ccd5313ece7e6d0bd"
+          }
+        ]
       },
       "licence_class": "permissive",
       "profile": "earth2-pl13-q-netcdf-v1",
@@ -5391,7 +5458,19 @@
         "gated": false,
         "account_needed": false,
         "licence": "MIT",
-        "uri": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab"
+        "uri": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab",
+        "files": [
+          {
+            "path": "aurora-0.25-v1.5-ensemble.ckpt",
+            "size": 5040967051,
+            "sha256": "d99b9192a39a32d79ee5ffa2bbebefce8abaff1c395399cc07cc72132bef3b71"
+          },
+          {
+            "path": "aurora-0.25-v1.5-static.pickle",
+            "size": 149508612,
+            "sha256": "c38a44e3970e876f2880cbbda3f3a521ddedba1a468bca5ccd5313ece7e6d0bd"
+          }
+        ]
       },
       "licence_class": "permissive",
       "profile": "earth2-pl13-q-netcdf-v1",
@@ -6351,7 +6430,8 @@
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
-          }
+          },
+          "amplitude_scale": "channel_spatial_std"
         }
       },
       "ai_cost": {
@@ -6486,7 +6566,8 @@
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
-          }
+          },
+          "amplitude_scale": "channel_spatial_std"
         }
       },
       "ai_cost": "unmeasured"
@@ -6613,7 +6694,8 @@
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
-          }
+          },
+          "amplitude_scale": "channel_spatial_std"
         }
       },
       "ai_cost": "unmeasured"

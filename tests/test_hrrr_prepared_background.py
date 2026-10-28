@@ -822,7 +822,7 @@ def test_the_prepare_front_door_forwards_the_portable_opt_in(tmp_path):
             preprocess_backend=None, preprocess_workers=None,
             cpu_preprocess_bridge=None, sealed_prepared_cache=False,
             extend_root_preparation=None, ack=(), pipeline_workers=None,
-            wps_namelist=None, child_workers=None,
+            wps_namelist=None, child_workers=None, no_stock_wrf_export=False,
         )
         base.update(extra)
         return argparse.Namespace(**base)

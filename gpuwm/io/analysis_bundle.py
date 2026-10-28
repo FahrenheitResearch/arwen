@@ -102,6 +102,53 @@ REQUIRED_INCREMENT = tuple(CORE_FIELDS) + ("QVAPOR",)
 #: below zero: mixing ratios, number concentrations and particle volumes.
 _NON_NEGATIVE_PREFIX = "Q"
 
+
+def host_threads() -> int:
+    """Threads a bundle's host arithmetic may use: ``GPUWM_BUNDLE_THREADS`` when set (a producer running several
+    bundles at once gives each its share of the cores), else up to 8 of this process's CPUs."""
+
+    import os
+
+    try:
+        asked = int(os.environ.get("GPUWM_BUNDLE_THREADS") or 0)
+    except ValueError:
+        asked = 0
+    if asked > 0:
+        return asked
+    try:
+        cpus = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cpus = os.cpu_count() or 1
+    return max(1, min(8, cpus))
+
+
+def _ordered_map(function, rows, threads: int | None = None):
+    """``function(row)`` for every row, yielded in row order.  With more than one thread the rows run on a pool
+    (the Rust host kernels and NumPy release the GIL) with at most ``2 x threads`` rows held at once; every row's
+    arithmetic is the one-thread loop's, so each result is that loop's to the last bit.  Single-core law
+    (2026-10-27, DA cycle bundles: ~20 s of every member's bundle on one thread, the field loops one after another)."""
+
+    threads = host_threads() if threads is None else max(1, int(threads))
+    if threads == 1:
+        for row in rows:
+            yield function(row)
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    rows = iter(rows)
+    with ThreadPoolExecutor(threads, thread_name_prefix="bundle-host") as pool:
+        pending = []
+        for row in rows:
+            pending.append(pool.submit(function, row))
+            if len(pending) >= 2 * threads:
+                break
+        while pending:
+            result = pending.pop(0).result()
+            for row in rows:
+                pending.append(pool.submit(function, row))
+                break
+            yield result
+
 #: What a wrfinput-form analysis carries for a cold start to read it (the WRF-input door's
 #: reader checks the rest of the real.exe inventory by its own rules).
 WRFINPUT_FORM_REQUIRED = ("Times", "U", "V", "W", "T", "PH", "MU", "PHB", "MUB", "P", "PB", "QVAPOR",
@@ -167,11 +214,10 @@ def _refuse(message: str) -> BundleRefusal:
 # hashing, reading, fingerprints
 # ---------------------------------------------------------------------------
 def sha256_file(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    # Once per process for each unchanged file (gpuwm.file_digest): a member leg's door checks the same
+    # bundle, derived and checkpoint bytes several times between its plan and its worker.
+    from gpuwm.file_digest import sha256_file as digest_once
+    return digest_once(path)
 
 
 _RESIDENT_INPUTS = contextvars.ContextVar("analysis_bundle_resident_inputs", default=None)
@@ -635,6 +681,12 @@ def load_bundle(source: str | Path, *, check_contents: bool = True) -> AnalysisB
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise _refuse(f"{MANIFEST} is not JSON: {error}") from None
     files: dict[str, Path] = {}
+    # Every listed file hashes at once, each on its own thread; the checks below then read the
+    # digests in manifest order, so the first file that fails is the one named, as before.
+    from gpuwm.file_digest import prefetch
+    for name in manifest["files"]:
+        if (root / name).is_file():
+            prefetch(root / name)
     for name, entry in manifest["files"].items():
         file = root / name
         if not file.is_file():
@@ -872,23 +924,32 @@ def _increment_core(rows, *, precision: str, fields: str) -> tuple[dict[str, np.
 
     from gpuwm.da.host_analysis import binary
 
-    arrays: dict[str, np.ndarray] = {}
-    rms: dict[str, float] = {}
-    exact: dict[str, bool] = {}
-    for name, av, adtype, bv, bdtype in rows:
+    def one(row):
+        name, av, adtype, bv, bdtype = row
         try:
             delta, stats = binary(av, bv, subtract=True)
         except ValueError as exc:
-            raise _refuse(f"{name} increment is not finite") from exc
+            return name, exc, None, None, None
         if fields == "differing" and name not in REQUIRED_INCREMENT and not stats["nonzero"]:
-            continue
+            return name, None, None, None, None
         stored = delta if precision == "f8" else delta.astype(np.float32)
         rebuilt = binary(av, stored, subtract=True)[0].astype(adtype)
         background_words = bv.astype(bdtype)
-        exact[name] = bool(np.array_equal(rebuilt.view(f"u{rebuilt.dtype.itemsize}"),
-                                          background_words.view(f"u{background_words.dtype.itemsize}")))
+        same = bool(np.array_equal(rebuilt.view(f"u{rebuilt.dtype.itemsize}"),
+                                   background_words.view(f"u{background_words.dtype.itemsize}")))
+        return name, None, stored, stats["rms"], same
+
+    arrays: dict[str, np.ndarray] = {}
+    rms: dict[str, float] = {}
+    exact: dict[str, bool] = {}
+    for name, error, stored, row_rms, same in _ordered_map(one, rows):
+        if error is not None:
+            raise _refuse(f"{name} increment is not finite") from error
+        if stored is None:
+            continue
+        exact[name] = same
         arrays[name] = stored
-        rms[name] = stats["rms"]
+        rms[name] = row_rms
     return arrays, {"precision": precision, "fields": sorted(arrays), "rms": rms, "exact_background": exact,
                     "exact_background_all": bool(exact) and all(exact.values())}
 
@@ -908,7 +969,8 @@ def _patched_copy(template: Path, out: Path, updates: Mapping[str, np.ndarray]) 
     partial.replace(out)
 
 
-def write_background(analysis: str | Path, increment: str | Path, out: str | Path) -> dict[str, Any]:
+def write_background(analysis: str | Path, increment: str | Path, out: str | Path, *,
+                     increment_read: dict[str, np.ndarray] | None = None) -> dict[str, Any]:
     """The background an IAU window starts from: the analysis minus its increment.
 
     Every increment variable changes its analysis variable, in float64 and rounded to the
@@ -916,12 +978,18 @@ def write_background(analysis: str | Path, increment: str | Path, out: str | Pat
     increment leaves below zero by rounding is set to zero and counted; with a float64
     increment the producer's own values (transport roundoff below zero included) are kept,
     and counted.
+
+    ``increment_read``, when given (an empty dict), receives :func:`read_increment`'s values
+    of ``increment`` as this call read them, for a caller that needs them next (the analysis
+    door's split): one decode of the increment file instead of two.  Nothing here writes them.
     """
 
     analysis, increment, out = Path(analysis), Path(increment), Path(out)
     require_classic(analysis, "the analysis")
     variables = increment_variables(increment, analysis)
     deltas = read_increment(increment)
+    if increment_read is not None:
+        increment_read.update(deltas)
     precision = increment_precision(increment)
     a = _open(analysis)
     _prefetch_unmasked(a, list(variables))
@@ -941,16 +1009,20 @@ def _background_core(rows, deltas: Mapping[str, np.ndarray],
 
     from gpuwm.da.host_analysis import binary
 
+    def one(row):
+        name, a64, dtype = row
+        clip = name.startswith(_NON_NEGATIVE_PREFIX) and precision[name] == np.dtype(np.float32).str
+        values, stats = binary(a64, deltas[name], subtract=True, clip=clip)
+        return name, clip, stats, values.astype(dtype)
+
     updates: dict[str, np.ndarray] = {}
     clipped: dict[str, dict[str, float]] = {}
     kept: dict[str, dict[str, float]] = {}
-    for name, a64, dtype in rows:
-        clip = name.startswith(_NON_NEGATIVE_PREFIX) and precision[name] == np.dtype(np.float32).str
-        values, stats = binary(a64, deltas[name], subtract=True, clip=clip)
+    for name, clip, stats, stored in _ordered_map(one, rows):
         if name.startswith(_NON_NEGATIVE_PREFIX) and stats["values"]:
             record = {key: stats[key] for key in ("values", "min")}
             (clipped if clip else kept)[name] = record
-        updates[name] = values.astype(dtype)
+        updates[name] = stored
     return updates, {"changed": sorted(updates), "increment_precision": dict(precision),
                      "clipped_negative": clipped, "negative_kept_from_producer": kept,
                      "unchanged": "every variable with no increment (land and surface state among them): the "
@@ -971,17 +1043,23 @@ def write_analysis(background: str | Path, increments: Mapping[str, np.ndarray],
     """
 
     background, out = Path(background), Path(out)
+    updates, record = _analysis_updates(background, increments)
+    _patched_copy(background, out, updates)
+    return {"analysis": str(out), **record}
+
+
+def _analysis_updates(background: Path, increments: Mapping[str, np.ndarray]):
+    """:func:`write_analysis`'s values before they are written: (stored-type updates, record)."""
+
     require_classic(background, "the background")
     b = _open(background)
     _prefetch_unmasked(b, list(increments))
     for name in increments:
         if name not in b.variables:
             raise _refuse(f"the increment carries {name} and the background has no {name}")
-    updates, record = _analysis_core(
+    return _analysis_core(
         ((name, _first_record(b.variables[name]), b.variables[name].dtype, delta)
          for name, delta in sorted(increments.items())))
-    _patched_copy(background, out, updates)
-    return {"analysis": str(out), **record}
 
 
 def _analysis_core(rows) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
@@ -991,16 +1069,22 @@ def _analysis_core(rows) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
 
     from gpuwm.da.host_analysis import binary
 
-    updates = {}
-    clipped: dict[str, dict[str, float]] = {}
-    for name, b64, dtype, delta in rows:
+    def one(row):
+        name, b64, dtype, delta = row
         try:
             values, stats = binary(b64, delta, clip=name.startswith(_NON_NEGATIVE_PREFIX))
         except ValueError as exc:
-            raise _refuse(f"background {name} plus its increment is not finite") from exc
+            return name, exc, None, None
+        return name, None, stats, values.astype(dtype)
+
+    updates = {}
+    clipped: dict[str, dict[str, float]] = {}
+    for name, error, stats, stored in _ordered_map(one, rows):
+        if error is not None:
+            raise _refuse(f"background {name} plus its increment is not finite") from error
         if name.startswith(_NON_NEGATIVE_PREFIX) and stats["values"]:
             clipped[name] = {key: stats[key] for key in ("values", "min")}
-        updates[name] = values.astype(dtype)
+        updates[name] = stored
     return updates, {"changed": sorted(updates), "clipped_negative": clipped}
 
 
@@ -1126,13 +1210,17 @@ def balanced_geopotential(background: Any, increments: Mapping[str, np.ndarray],
         # Only a mass that moves takes the mass-aware integration; otherwise the operator is
         # the fixed-mass one the cycle's rebalance uses, byte for byte.
         after["mup"] = binary(column.mup, increments["MU"])[0]
+    loads = []
     for wrf_name, name in _LOADING.items():
         current = getattr(column, name, None)
         if current is None:
             if wrf_name in increments and binary(increments[wrf_name], 0.0)[1]["nonzero"]:
                 raise _refuse(f"the increment moves {wrf_name} and the background carries no {wrf_name}")
             continue
-        after[name] = binary(current, increments.get(wrf_name, 0.0), clip=2)[0]
+        loads.append((name, current, increments.get(wrf_name, 0.0)))
+    # each species' analysed loading on the bundle threads (one kernel call per species, as before)
+    for name, value in _ordered_map(lambda row: (row[0], binary(row[1], row[2], clip=2)[0]), loads):
+        after[name] = value
     return hydro.mass_aware_geopotential_change(column, after, hypsometric_opt=hypsometric_opt)
 
 
@@ -1145,7 +1233,8 @@ def _balance_core(analysis: Mapping[str, np.ndarray], background: Mapping[str, n
 
     from gpuwm.da.host_analysis import binary
 
-    changes = {name: binary(analysis[name], background[name], subtract=True)[0] for name in names}
+    changes = dict(_ordered_map(lambda name: (name, binary(analysis[name], background[name], subtract=True)[0]),
+                                names))
     dphp, record = balance(changes)
     balanced = binary(background["PH"], dphp)[0]
     record["producer_ph_departure_max_abs_m2s2"] = binary(balanced, analysis["PH"], subtract=True)[1]["max_abs"]
@@ -1155,6 +1244,14 @@ def _balance_core(analysis: Mapping[str, np.ndarray], background: Mapping[str, n
 # ---------------------------------------------------------------------------
 # make / verify / check_run
 # ---------------------------------------------------------------------------
+def _digest_beside(path: Path) -> None:
+    """Start the file's SHA-256 on a thread now (gpuwm.file_digest.prefetch); write_manifest then takes it."""
+
+    from gpuwm.file_digest import prefetch
+
+    prefetch(path)
+
+
 def _versions(producer: str) -> dict[str, Any]:
     from importlib import metadata
 
@@ -1261,8 +1358,26 @@ def make_bundle(out: str | Path, *, background: str | Path, grid_id: str, static
                 if not np.all(np.isfinite(values)):
                     raise _refuse(f"resident increment {name} is not finite")
                 increments[name] = np.asarray(values, dtype=np.float64)
-        record["analysis_from_increment"] = write_analysis(background, increments, target)
-    if ph == "balance":
+        updates, made = _analysis_updates(background, increments)
+        record["analysis_from_increment"] = {"analysis": str(target), **made}
+        if ph == "balance":
+            # The analysis is written once, with the engine's PH already in it.  The balance reads the analysis's
+            # T, moisture, MU and PH, which are exactly these stored words (or the background's where the increment
+            # has none), so writing the file and then patching PH into a second full copy wrote the same bytes
+            # twice and decoded them again in between (single-core law, 2026-10-27 DA cycle bundles).
+            b = _open(background)
+            names = [name for name in ("T", "MU", *_LOADING) if name in b.variables]
+            _prefetch_unmasked(b, names + ["PH"])
+            analysed = {name: (np.asarray(updates[name], dtype=np.float64) if name in updates
+                               else _first_record(b.variables[name])) for name in names + ["PH"]}
+            balanced, record["balance"] = _balance_core(
+                analysed, {name: _first_record(b.variables[name]) for name in names + ["PH"]}, names,
+                lambda changes: balanced_geopotential(background, changes, hypsometric_opt=hypsometric_opt,
+                                                      coordinate=coordinate))
+            updates = dict(updates, PH=balanced)
+        _patched_copy(background, target, updates)
+        _digest_beside(target)
+    if ph == "balance" and analysis is not None:
         a, b = _open(target), _open(background)
         names = [name for name in ("T", "MU", *_LOADING) if name in a.variables and name in b.variables]
         _prefetch_unmasked(a, names + ["PH"])
@@ -1278,6 +1393,7 @@ def make_bundle(out: str | Path, *, background: str | Path, grid_id: str, static
     if iau_window_s is not None:
         record["increment"] = write_increment(target, background, out / INCREMENT,
                                                precision=increment_precision, fields=fields)
+        _digest_beside(out / INCREMENT)
     if noda is not None:
         require_classic(noda, "the no-DA state")
         shutil.copyfile(noda, out / NODA)

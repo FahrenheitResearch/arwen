@@ -363,6 +363,78 @@ def test_a_complete_set_is_read_where_it_sits_and_says_nothing(
                 if said[0] == "route_inputs_rendered"]
 
 
+def test_a_set_written_before_the_configuration_changed_is_not_what_runs(
+        tmp_path, monkeypatch, authored):
+    """``[shared] gsd_diagnostics = 1`` added after the door wrote the set.
+
+    WOOF canary run_0771cd8814b6e7f8 (HRRR 2026-03-10 12Z, 3 km + 1 km):
+    ``gpuwm domain`` wrote the configuration and its complete set, the
+    worker then turned on the hourly storm maxima in the TOML, and the run
+    read the stale set.  The root preparation reads the TOML, the
+    hierarchy read d01 from the set, and the binding refused the run after
+    the fetch and the root preparation: "native namelist d01 trajectory
+    controls differ from the sealed root preparation: run.gsd_diagnostics".
+    """
+
+    import re
+
+    from gpuwm.hrrr_configuration import resolve_root_experiment
+    from gpuwm.hrrr_hierarchy_direct import (
+        _native_experiment, _sealed_root_rrtmg_compatibility,
+        _sealed_root_rrtmg_variant, _validated_root_preparation_binding)
+    from gpuwm.ingest.hrrr_target import load_hrrr_target_domain
+    from gpuwm.ingest.prepared_cache import prepared_domain_config_identity
+    from gpuwm.vertical_contract import explicit_vertical_from_wrf_namelist
+
+    plan, config = authored
+    beside = route_input_paths(config)
+    door_set = {role: path.read_bytes() for role, path in beside.items()}
+    # The worker's own edit (severe_ml.with_storm_maxima), after the door.
+    text = config.read_text(encoding="utf-8")
+    text = re.sub(r"(?m)^\[shared\]\s*$", "[shared]\ngsd_diagnostics = 1",
+                  text, count=1)
+    config.write_text(text, encoding="utf-8")
+    exp = _experiment(config)
+    assert [domain.run.gsd_diagnostics for domain in exp.domains] == [1] * len(exp.domains)
+    assert b"gsd_diagnostics" not in door_set["namelist_input"]
+
+    observer = _Warnings()
+    staged = _drive_chain(plan, config, exp, monkeypatch, observer=observer)
+
+    prepare = _stage(staged, "prepare")
+    hierarchy = _stage(staged, "hierarchy")
+    used = route_input_paths(plan.run_dir / "chain" / "route-inputs" / config.name)
+    assert prepare[prepare.index("--namelist-input") + 1] == str(used["namelist_input"])
+    assert hierarchy[hierarchy.index("--namelist-input") + 1] == str(used["namelist_input"])
+    assert "gsd_diagnostics" in used["namelist_input"].read_text(encoding="utf-8")
+    # The door's set beside the configuration is left as it was.
+    assert {role: path.read_bytes() for role, path in beside.items()} == door_set
+    (code, message, fields), = [said for said in observer.said
+                                if said[0] == "route_inputs_rendered"]
+    assert fields["disagreeing"] == ["run.gsd_diagnostics"]
+    assert "run.gsd_diagnostics" in message
+
+    # The binding the hierarchy runs, on what the two stages now read: the
+    # root preparation's d01 from the TOML, the hierarchy's from the set.
+    target = load_hrrr_target_domain(used["target_domain"])
+    root, _tables = resolve_root_experiment(
+        target=target,
+        vertical=explicit_vertical_from_wrf_namelist(
+            used["namelist_input"], expected_nz=target.nz, context="test"),
+        namelist_input=used["namelist_input"], start_time=exp.start_time,
+        run_seconds=int(exp.run_seconds), experiment_config=config,
+        wps_namelist=used["wps_namelist"],
+        history_interval_seconds=int(exp.domains[0].history_interval_s))
+    sealed = {"domain_config": prepared_domain_config_identity(root.root),
+              "namelist_sha256": "a" * 64}
+    native, _resolved, _report = _native_experiment(
+        used["wps_namelist"], used["namelist_input"],
+        rrtmg_variant=_sealed_root_rrtmg_variant(sealed),
+        rrtmg_compatibility=_sealed_root_rrtmg_compatibility(sealed))
+    assert [domain.run.gsd_diagnostics for domain in native.domains] == [1] * len(exp.domains)
+    _validated_root_preparation_binding(sealed, native.domains[0])
+
+
 @pytest.fixture(scope="module")
 def authored_template(tmp_path_factory):
     @lru_cache(maxsize=1)

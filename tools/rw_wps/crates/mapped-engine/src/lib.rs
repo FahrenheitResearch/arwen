@@ -55,7 +55,20 @@ pub const FRAMESET_SCHEMA: &str = "gpuwm-mapped-frameset-v1";
 /// marker that moved only with the first let a pre-fix binary pass the
 /// handshake and then refuse conformant IEEE-packed (template 5.4) bytes
 /// with a message blaming the publisher of the file.
-pub const ABI_CONTRACT: &str = "gpuwm-mapped-engine-abi frameset=gpuwm-mapped-frameset-v1 height-interfaces=1 grib2-drt=0,2,3,4,40,41,42,50,51,61,200";
+///
+/// `window-fields=omega` is the atmospheric-window inventory contract
+/// (window.rs CANONICAL_ATMOSPHERIC_FIELDS against
+/// gpuwm.ingest.atmospheric_window): an engine built before vertical
+/// motion joined it (1cbcc73e1c) passed the handshake, then refused every
+/// HRRR native forecast lead (a time-lagged DA member, cycle 08Z f02) with
+/// "window field pressure_vertical_velocity is outside the atmospheric
+/// regular-join inventory".
+///
+/// `bound-clocks=window-start` is the composition clock
+/// `source_cycle_window_start_broadcast` (join.rs): a composition that
+/// declares it would be refused by an engine built before it as an
+/// unknown clock.
+pub const ABI_CONTRACT: &str = "gpuwm-mapped-engine-abi frameset=gpuwm-mapped-frameset-v1 height-interfaces=1 window-fields=omega bound-clocks=window-start grib2-drt=0,2,3,4,40,41,42,50,51,61,200";
 pub const REFUSAL_SCHEMA: &str = "gpuwm-mapped-refusal-v1";
 pub const PROGRESS_SCHEMA: &str = "gpuwm-mapped-engine-progress-v1";
 pub const INSPECTION_SCHEMA: &str = "gpuwm-mapped-source-inspection-v1";

@@ -866,6 +866,7 @@ fn pressure_contour_smoothing_passes() -> usize {
     std::env::var("RUSTWX_PRESSURE_CONTOUR_SMOOTH_PASSES")
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
+        .or_else(|| rustwx_render::theme::active_theme().contour_smooth_passes("mslp"))
         .unwrap_or(0)
         .clamp(0, 12)
 }

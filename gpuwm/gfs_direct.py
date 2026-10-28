@@ -89,6 +89,7 @@ from gpuwm.ingest.preprocess_backend import (
     resolve_preprocess_backend,
 )
 from gpuwm.ingest.real import initialize_real
+from gpuwm.ingest.land_state import land_state_context
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.ingest.soil import (door_reconciled_soil_category,
                                soil_source_orography)
@@ -719,7 +720,11 @@ def _verify_input_manifest(
         spec = declared[role]
         if not isinstance(spec, dict) or spec.get("name") != source.name:
             raise ValueError(f"GFS input manifest path mismatch for {role}")
-        observed = _sha256(source)
+    # Each GRIB hashed on host threads, held to its role in order.
+    from gpuwm.ingest.host_parallel import map_ordered
+    for (role, _), observed in zip(roles.items(), map_ordered(
+            _sha256, list(roles.values()))):
+        spec = declared[role]
         if spec.get("sha256") != observed:
             raise ValueError(
                 f"GFS input digest mismatch for {role}: "
@@ -804,9 +809,11 @@ def _load_bridge_snapshots(
         }
     except (KeyError, ValueError, IndexError) as error:
         raise ValueError("GFS bridge source SHA inventory is malformed") from error
+    from gpuwm.ingest.host_parallel import map_ordered
     if expected_source_sha256 is None:
-        expected_source_sha256 = {
-            hour: _sha256(path) for hour, path in records}
+        expected_source_sha256 = dict(zip(
+            (hour for hour, _ in records),
+            map_ordered(_sha256, [path for _, path in records])))
     if source_sha256 != dict(expected_source_sha256):
         raise ValueError("GFS bridge decoded source bytes differ from input manifest")
     inventory_path = root / "inventory.tsv"
@@ -859,12 +866,21 @@ def _load_bridge_snapshots(
         (hour, name) for hour, _ in records for name in (*_THREE_D, *_TWO_D)}
     if set(decoded_rows) != expected_decoded:
         raise ValueError("GFS decoded-output manifest inventory differs from contract")
+    checked_rows = []
     for (hour, name), (declared_bytes, declared_sha256, declared_name) in decoded_rows.items():
         relative = f"f{hour:03d}/{name}.f32le"
         path = root / relative
         if declared_name != relative or not path.is_file():
             raise ValueError("GFS decoded-output manifest path differs from contract")
-        if path.stat().st_size != declared_bytes or _sha256(path) != declared_sha256:
+        checked_rows.append((relative, path, declared_bytes, declared_sha256))
+    # Every decoded array hashed on host threads (one file per item), then
+    # held to its row in manifest order: the first mismatch named is the
+    # one the serial walk named.
+    observed = map_ordered(
+        lambda row: (row[1].stat().st_size == row[2]
+                     and _sha256(row[1]) == row[3]), checked_rows)
+    for (relative, *_), matches in zip(checked_rows, observed):
+        if not matches:
             raise ValueError(f"GFS decoded array identity mismatch for {relative}")
 
     # Read when asked, not here.  Every decoded array was verified above;
@@ -887,12 +903,20 @@ def _bridge_snapshot(root: Path, cycle: datetime, hour: int, levels_hpa,
 
     fields: dict[str, np.ndarray] = {}
     if with_fields:
+        # Every field is its own file: read and widen them on host threads
+        # (gpuwm.ingest.host_parallel), in the serial order, so each array
+        # is the one the serial loop read.  Serially this was a single-core
+        # pass over every decoded lead, taken twice per lead.
+        from gpuwm.ingest.host_parallel import map_ordered
+
         time_root = Path(root) / f"f{hour:03d}"
-        for name in _THREE_D:
-            fields[name] = _read_f32(
-                time_root / f"{name}.f32le", (levels_hpa.size, ny, nx))
-        for name in _TWO_D:
-            fields[name] = _read_f32(time_root / f"{name}.f32le", (ny, nx))
+        reads = ([(name, (levels_hpa.size, ny, nx)) for name in _THREE_D]
+                 + [(name, (ny, nx)) for name in _TWO_D])
+        arrays = map_ordered(
+            lambda item: _read_f32(time_root / f"{item[0]}.f32le", item[1]),
+            reads)
+        for (name, _), array in zip(reads, arrays):
+            fields[name] = array
     return Era5Snapshot(
         valid_time=cycle + timedelta(hours=hour),
         levels_hpa=levels_hpa,
@@ -2792,6 +2816,9 @@ def prepare_gfs_wrf(
             # sub-source-cell reconstitution exists for.
             soil_mesh=soil_mesh_plan_from_case(
                 snapshots[0], grid, experiment_config),
+            # Where and when, for a same-model soil donor (gpuwm/ingest/
+            # land_state.py: HRRR's RUC soil for a RUC run over CONUS).
+            land_state=land_state_context(grid, times[0]),
             route=_WATER_ROUTE)
         if len(exp.domains) > 1 and not chain_tree:
             # Every forcing time has been consumed; a single domain and a

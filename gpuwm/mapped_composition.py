@@ -226,9 +226,15 @@ _SOIL_PAIR = ("soil_temperature", "volumetric_soil_moisture")
 #: is carried to every primary lead -- soil from a physical analysis under
 #: an AI forecast is deliberately frozen at the shared analysis, and the
 #: receipt names every carried time so nothing is silently frozen.
+#: ``source_cycle_window_start_broadcast`` takes the donor's ONE record
+#: valid at the primary's first valid time, from the primary's own cycle,
+#: and carries it: a forecast started at its cycle gets the same analysis
+#: record, a time-lagged member started at lead L gets its own run's state
+#: at L instead of an analysis three to seventeen hours stale.
 _BOUND_TIME_ALIGNMENTS = frozenset({
     "valid_time_exact", "cycle_invariant_broadcast",
     "source_cycle_analysis_broadcast", "source_cycle_analysis_select_broadcast",
+    "source_cycle_window_start_broadcast",
 })
 
 #: Borrowed fields support exact contiguous/strided subsets and native
@@ -1330,6 +1336,34 @@ def _compose_bound_fields(
             carrier = None
         elif alignment == "source_cycle_analysis_select_broadcast":
             raise ValueError("cycle analysis selection requires the Rust mapped engine")
+        elif alignment == "source_cycle_window_start_broadcast":
+            if len(primary_cycles) != 1:
+                raise ValueError(
+                    "source-cycle window-start broadcast cannot span mixed "
+                    f"primary source cycles {primary_cycles}"
+                )
+            first = min(time for time, _member in primary_keys)
+            if len(supplied) != 1:
+                raise ValueError(
+                    f"contributing source binding {binding_name!r} supplies "
+                    f"{name!r} at {len(supplied)} valid times; the window-start "
+                    "broadcast requires exactly one record, valid at the run's start"
+                )
+            valid_time, carrier = next(iter(supplied.items()))
+            # The run's start is no later than this call's first primary
+            # time (a remaining-forcing pass starts one lead in) and no
+            # earlier than the primary cycle.
+            if (not primary_cycles[0] <= valid_time <= first
+                    or carrier.source_cycle != primary_cycles[0]):
+                raise ValueError(
+                    f"contributing source binding {binding_name!r} supplies "
+                    f"{name!r} valid at {valid_time.isoformat()} from cycle "
+                    f"{carrier.source_cycle.isoformat()}; the window-start "
+                    f"broadcast needs the primary cycle "
+                    f"{primary_cycles[0].isoformat()}'s own record valid "
+                    f"between that cycle and the first primary time "
+                    f"{first.isoformat()}"
+                )
         elif alignment == "source_cycle_analysis_broadcast":
             if len(primary_cycles) != 1:
                 raise ValueError(

@@ -283,6 +283,17 @@ def _donor(*, table, row, cycle, area, out, force):
                     with item.open("rb") as source:
                         shutil.copyfileobj(source, merged, length=8 * 1024 * 1024)
         candidates = list(analysis.glob(recipe["output"]))
+        if not candidates and not recipe.get("inputs"):
+            # The fetch's own list of the payloads it delivered (inputs.txt), when the table's name is not
+            # the one this transport wrote. Named breakage (WOOF run_6b3482bc3f8d1785, 2026-10-26): under
+            # GPUWM_FETCH_POLICY=aws the GDAS analysis arrives whole from S3 as gdas.tHHz.pgrb2.0p25.f000,
+            # not as the NOMADS subset (gdas.*.subset.grib2) the table names, so every Earth-2 run from a
+            # recent GFS cycle stopped at 'donor recipe expected one gdas.*.subset.grib2, found 0'.
+            from gpuwm import fetch_routes
+            listing = analysis / fetch_routes.INPUT_LIST_NAME
+            if listing.is_file():
+                candidates = [Path(line.strip()) for line in listing.read_text(encoding="utf-8").splitlines()
+                              if line.strip() and Path(line.strip()).is_file()]
         if len(candidates) != 1:
             raise ValueError(f"donor recipe expected one {recipe['output']}, found {len(candidates)}")
         path = candidates[0]

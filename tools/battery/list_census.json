@@ -1564,7 +1564,7 @@
    "environment": {
     "GPUWM_NO_LOCAL_GPU": "1"
    },
-   "collected_total": 29912,
+   "collected_total": 29934,
    "files": {
     "tests/test_runplan.py": 169,
     "tests/test_nest_spawn_soil.py": 20,
@@ -1728,7 +1728,9 @@
     "tests/test_restart.py": 181,
     "tests/test_prepared_domain_tree_forecast.py": 26,
     "tests/test_relocation_radiation_carriers.py": 9,
-    "tests/test_wif_climatology.py": 23,
+    "tests/test_wif_climatology.py": 24,
+    "tests/test_cuda_wait.py": 12,
+    "tests/test_prep_host_parallel.py": 9,
     "tests/test_wif_climatology_equivalence.py": 6,
     "tests/test_ruc_source_matrix.py": 53,
     "tests/test_soil_layer_geometry.py": 27,

@@ -53,6 +53,31 @@ def launch_ocean_init(fields, hml0, *, start=True):
     get_kernel("oml", "oml_init")(((n+127)//128,), (128,),
         tuple(fields[name] for name in STATE_FIELDS) + (fields["tsk"], np.float32(hml0), np.int32(start), np.int32(n)))
 
+_ICE_OWNED = None
+
+
+def _ice_owned(fields):
+    """Columns whose OML surface heat is the sea-ice step's ICE_OCEAN_HEAT.
+
+    ``ice_ocean_mask`` is every non-lake water column, so passing it as the
+    ice mask swapped the ice model's own open-water flux into all open ocean
+    as soon as ice sat anywhere on the grid. The ice step's flux applies only
+    where it set the surface fluxes (``ice_ocean_coupled``, as on the 3D PWP
+    route) and on masked water the atmosphere sees as land (XLAND 1 sea ice
+    after it melts), where no atmospheric water flux exists. Every masked
+    column stays a mask column for oml_step's ownership test (XLAND > 1.5 or
+    this mask), so which columns the ocean steps is unchanged.
+    """
+    import cupy as cp
+    global _ICE_OWNED
+    if _ICE_OWNED is None:
+        _ICE_OWNED = cp.ElementwiseKernel(
+            'float32 mask, float32 coupled, float32 land', 'float32 owned',
+            'owned = (mask > 0.0f && (coupled > 0.0f || land <= 1.5f)) ? 1.0f : 0.0f;',
+            'oml_ice_owned_columns')
+    return _ICE_OWNED(fields["ice_ocean_mask"], fields["ice_ocean_coupled"], fields["xland"])
+
+
 def launch_ocean_step(fields, *, dt, gamma, relaxation_time, constants_override=None, dx=None, dy=None, ocean_timestep_minutes=1.0):
     if "om_tmp" in fields:
         from gpuwm.ocean.mixed_layer import step
@@ -73,7 +98,7 @@ def launch_ocean_step(fields, *, dt, gamma, relaxation_time, constants_override=
     get_kernel("oml", "oml_step")(((n+127)//128,), (128,),
         tuple(fields[name] for name in (*STATE_FIELDS, "tsk", *FORCING_FIELDS)) +
         (fields.get("ice_ocean_heat", fields["tsk"]),
-         fields.get("ice_ocean_mask", fields["xland"]), np.int32(coupled)) +
+         _ice_owned(fields) if coupled else fields["xland"], np.int32(coupled)) +
         tuple(np.float32(v) for v in (dt, gamma, relaxation_time, c["rhowater"], c["cwater"], c["stbolt"], constants.G)) + (np.int32(n),))
     update_ocean_diagnostics(fields)
 
@@ -97,6 +122,9 @@ def initialize_ocean(fields, cfg, initial=None, *, start=True, latitude=None, lo
                            source=cfg.ocean_analysis_source, rotation=rotation, expected_time=expected_time)
         from gpuwm.ocean.mixed_layer import initialize
         initialize(fields, cfg, initial, start=start)
+        if start:
+            from gpuwm.ocean.seaice import seed_pwp_profile
+            seed_pwp_profile(fields)
         update_ocean_diagnostics(fields)
         return
     import cupy as cp

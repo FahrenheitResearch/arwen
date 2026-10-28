@@ -129,6 +129,7 @@ BRIDGE_ABI_MARKERS = {
     "rw_ensbatch": (
         b"gpuwm-ensemble-diagnostic-reduce.v1\tf32-words\tf64-two-pass\t"
         b"member-order\tsha256\tmember-weights-v1"),
+    "rw_probgrid": b"gpuwm-rw-probgrid-products-v1\tsevere\tprobability\tlow",
     "rw_verify": b"gpuwm.verify-visuals.request.v1",
     "rw_scorecard": b"gpuwm.obs-scorecard.manifest.v1",
     "rw_compare": b"gpuwm.reference-input.v1",
@@ -236,7 +237,8 @@ BRIDGE_ABI_MARKERS = {
     # mapped_engine::ABI_CONTRACT; tests bind all three.
     "gpuwm_mapped_engine": (
         b"gpuwm-mapped-engine-abi frameset=gpuwm-mapped-frameset-v1 "
-        b"height-interfaces=1 grib2-drt=0,2,3,4,40,41,42,50,51,61,200"),
+        b"height-interfaces=1 window-fields=omega bound-clocks=window-start "
+        b"grib2-drt=0,2,3,4,40,41,42,50,51,61,200"),
     # The static-field builder cdylib (tools/rustwx/crates/static-fields),
     # the default engine for the WPS-geogrid-equivalent statics from the
     # static-rust-port lanes on.  A library, so the literal is an

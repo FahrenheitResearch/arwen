@@ -959,8 +959,16 @@ def _date_text(value: datetime) -> str:
 
 
 def _dimensions(contract: Mapping[str, object], *, nx: int, ny: int,
-                nz: int, num_soil_layers: int = 4
+                nz: int, num_soil_layers: int = 4,
+                bdy_width: int | None = None,
                 ) -> dict[str, int | None]:
+    """The file's dimension extents: the frozen contract's, resized.
+
+    ``bdy_width`` is the run's ``spec_bdy_width``, the wrfbdy strip
+    width (real.exe sizes ``bdy_width`` from it).  ``None`` keeps the
+    contract's own extent, which is what a wrfinput (no such dimension)
+    and the tools that rebuild the frozen file ask for.
+    """
     overrides = {
         "Time": None,
         "west_east": nx,
@@ -971,6 +979,8 @@ def _dimensions(contract: Mapping[str, object], *, nx: int, ny: int,
         "bottom_top_stag": nz + 1,
         "soil_layers_stag": num_soil_layers,
     }
+    if bdy_width is not None:
+        overrides["bdy_width"] = int(bdy_width)
     return {
         item["name"]: overrides.get(item["name"], int(item["length"]))
         for item in contract["dimensions"]
@@ -2124,7 +2134,8 @@ def _validate_file(path: Path, contract: Mapping[str, object], *,
                    num_soil_layers: int = 4,
                    expected_global_attributes: Mapping[str, object]
                    | None = None,
-                   engine: str | None = None) -> dict[str, object]:
+                   engine: str | None = None,
+                   bdy_width: int | None = None) -> dict[str, object]:
     """Read the published file back and check it against the contract.
 
     The header half -- global attributes, variable inventory and order,
@@ -2136,7 +2147,7 @@ def _validate_file(path: Path, contract: Mapping[str, object], *,
     engine = resolve_wrfinput_engine(engine)
     expected_dimensions = _dimensions(
         contract, nx=nx, ny=ny, nz=nz,
-        num_soil_layers=num_soil_layers)
+        num_soil_layers=num_soil_layers, bdy_width=bdy_width)
     attribute_types = contract["global_attribute_types"]
     with _open_for_validation(path, engine) as dataset:
         if expected_global_attributes is not None:
@@ -2291,17 +2302,53 @@ def validate_stock_wrf_export_config(
             f"unsupported {label} microphysics: {error}",
             unsupported={"mp_physics": (cfg.get("mp_physics"), None)},
         ) from None
+    # spec_bdy_width is NOT pinned (U-E6).  It was required to be 5, the
+    # width of the frozen v4.6.1 file the contract was read from, so every
+    # HRRR-recipe preparation (spec_bdy_width = 10, spec_zone 1 +
+    # relax_zone 9, as the operational HRRR namelist) had its companion
+    # export refused.  The wrfbdy strip width is just the bdy_width
+    # dimension: real.exe sizes it from spec_bdy_width, and the export
+    # sizes it from the prepared boundary tables (_prepared_bdy_width).
     required = {"hybrid_opt": 2, "hypsometric_opt": 2,
-                "specified": root, "nested": not root, "spec_bdy_width": 5}
+                "specified": root, "nested": not root}
     if not configured_suite:
         required.update({"bl_pbl_physics": 1, "sf_sfclay_physics": 91,
                          "sf_surface_physics": 2})
     mismatch = {name: (cfg.get(name), expected)
                 for name, expected in required.items() if cfg.get(name) != expected}
+    width = cfg.get("spec_bdy_width")
+    zones = (cfg.get("spec_zone", 1), cfg.get("relax_zone", 4))
+    if (isinstance(width, bool) or not isinstance(width, int) or width < 1
+            or not all(isinstance(zone, int) for zone in zones)
+            or width < zones[0] + zones[1]):
+        # The strip must hold the specified and relaxation zones, the
+        # rule gpuwm.config.validate_run_config applies to every run.
+        mismatch["spec_bdy_width"] = (
+            width, f">= spec_zone + relax_zone = {zones[0]} + {zones[1]}")
     if mismatch:
         raise StockWrfExportUnsupported(
             f"unsupported {label} configuration: {mismatch}", unsupported=mismatch)
     return inventory
+
+
+def _prepared_bdy_width(cache: PreparedCache, cfg: Mapping[str, object],
+                        interval_index: int) -> int:
+    """The wrfbdy strip width: the prepared tables', which must be the run's.
+
+    One width, read off the first boundary record's theta west strip
+    (gpuwm side layout ``(z, y, width)``), and refused if it is not the
+    ``spec_bdy_width`` the cache's configuration records: a stock WRF
+    namelist states that number, and a file sized from anything else is
+    one wrf.exe would read with the wrong strip.
+    """
+    prefix = f"lbc/{interval_index}/theta/west/value"
+    shape = cache._arrays[prefix]["shape"]
+    width = int(shape[-1])
+    if width != int(cfg["spec_bdy_width"]):
+        raise ValueError(
+            f"prepared boundary tables are {width} rows wide but the cache "
+            f"records spec_bdy_width = {cfg['spec_bdy_width']}")
+    return width
 
 
 def _prepared_domain_context(artifact: PreparedDomainArtifacts, domain,
@@ -2788,9 +2835,10 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
                 staging / "wrfinput_d01", input_contract, input_dimensions,
                 updates, wrfinput_fields, stamp, engine)
         bdy_contract = contract_bundle["wrfbdy"]
+        bdy_width = _prepared_bdy_width(cache, cfg, interval_indices[0])
         bdy_dimensions = _dimensions(
             bdy_contract, nx=nx, ny=ny, nz=nz,
-            num_soil_layers=num_soil_layers)
+            num_soil_layers=num_soil_layers, bdy_width=bdy_width)
         export_fields = _wrfbdy_export_fields(
             cache, physics_inventory, bdy_contract)
         _write_wrfbdy(
@@ -2813,7 +2861,7 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
                 num_soil_layers=num_soil_layers,
                 expected_global_attributes=_domain_global_attributes(
                     updates),
-                engine=engine),
+                engine=engine, bdy_width=bdy_width),
         }
         limitations = [
             "single specified projected domain only (lambert stock-WRF-gated; mercator/polar exports oracle-gated, not yet stock-WRF-gated)",

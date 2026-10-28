@@ -38,7 +38,7 @@ extern "C" __global__ void ice_precipitation(
 extern "C" __global__ void ice_step(
     float *ap,float *vp,float *sp,float *tp,const float *mask,
     const float *rain,const float *snowfall,float *growth,float *melt,float *energy,
-    float *error,float *ocean,float *ocean_heat,float *dhi,float *da,float *hiout,float *hsout,float *tsk,
+    float *error,float *ocean,float *ocean_heat,float *coupled,float *dhi,float *da,float *hiout,float *hsout,float *tsk,
     const float *sst,const float *ta,const float *qa,const float *p,const float *ch,
     const float *sw,const float *lw,float *hfx,float *lh,float *qfx,
     float *qsfc,float *albedo,float *emiss,float *snow,float *snowh,float *znt,
@@ -46,6 +46,10 @@ extern "C" __global__ void ice_step(
     int i=blockDim.x*blockIdx.x+threadIdx.x; if(i>=n || mask[i]==0)return;
     double a=ap[i], v=vp[i], s=sp[i], dt=dt0, qo=qo0;
     double oldv=v, olds=s, olda=a, oldenergy=-lf*(rhoi*v+s);
+    // 1 where this step sets the column's surface fluxes (ice present before
+    // or after it): only there does the ocean take OCEAN_HEAT instead of the
+    // atmosphere's fluxes, which the atmosphere itself sees everywhere else.
+    coupled[i]=0.f;
     // A warm ice-free ocean remains the ocean/LSM owner's column. New ice
     // forms only when that owner supplies water at/below the freezing point.
     double water_t=fmax(tf,(double)sst[i]);
@@ -129,6 +133,7 @@ extern "C" __global__ void ice_step(
     // Fractional tile fluxes feed the existing PBL and surface ledger.
     // Keep the LSM's open-water component, compute the ice component anew.
     if(olda>0 || a>0) {
+        coupled[i]=1.f;
         hfx[i]=olda*h+(1.-olda)*hw;
         qfx[i]=olda*e+(1.-olda)*ew;
         lh[i]=lv*qfx[i];
@@ -149,16 +154,14 @@ extern "C" __global__ void ice_blend_ocean(const float *mask,const float *a,
 
 // Mixed-layer supercooling freezes into the column, conserving the heat of
 // water plus solid fusion enthalpy. The water owner never remains below Tf.
-extern "C" __global__ void ice_ocean_freeze(
-    const float *mask,float *a,float *v,float *skin,float *hi,const float *s,
+// The ice side is shared by both ocean owners; only where the heat comes from
+// differs (one OML slab, or the 3D PWP mixed-layer profile).
+__device__ void freeze_heat_into_column(int i,double heat,
+    float *a,float *v,float *skin,float *hi,const float *s,
     float *hs,float *growth,float *energy,float *error,float *ocean,
     float *dhi,float *da,float *snow,float *snowh,float *albedo,float *znt,
-    float *sst,float *tml,const float *hml,
-    float hnew,float water_capacity,int n) {
-    int i=blockDim.x*blockIdx.x+threadIdx.x;
-    if(i>=n || mask[i]==0 || tml[i]>=271.35f)return;
+    float hnew) {
     double oldv=v[i], olda=a[i], oldhi=hi[i];
-    double heat=(271.35f-(double)tml[i])*water_capacity*hml[i];
     double vol=heat/(rhoi*lf), nv=oldv+vol;
     double na=fmin(1.,olda+vol/hnew);
     v[i]=nv;a[i]=na;hi[i]=nv/na;hs[i]=s[i]/(rhos*na);
@@ -169,5 +172,85 @@ extern "C" __global__ void ice_ocean_freeze(
     growth[i]+=vol;energy[i]-=heat;ocean[i]+=heat;
     error[i]+=-lf*rhoi*((double)v[i]-oldv)+heat;
     dhi[i]+=(double)hi[i]-oldhi;da[i]+=(double)a[i]-olda;
+}
+
+// sf_ocean_physics=1 (OML): the slab TML over depth HML.
+extern "C" __global__ void ice_ocean_freeze(
+    const float *mask,float *a,float *v,float *skin,float *hi,const float *s,
+    float *hs,float *growth,float *energy,float *error,float *ocean,
+    float *dhi,float *da,float *snow,float *snowh,float *albedo,float *znt,
+    float *sst,float *tml,const float *hml,
+    float hnew,float water_capacity,int n) {
+    int i=blockDim.x*blockIdx.x+threadIdx.x;
+    if(i>=n || mask[i]==0 || tml[i]>=271.35f)return;
+    double heat=(271.35f-(double)tml[i])*water_capacity*hml[i];
+    freeze_heat_into_column(i,heat,a,v,skin,hi,s,hs,growth,energy,error,ocean,
+                            dhi,da,snow,snowh,albedo,znt,hnew);
     sst[i]=271.35f;tml[i]=271.35f;
+}
+
+// sf_ocean_physics=2 (3D PWP, the multi-day default): OM_TMP is a level-major
+// profile (k*n+i) over layer bottoms OM_DEPTH. The PWP step leaves the surface
+// heat of the columns whose fluxes the ice step set (COUPLED: ice present
+// before or after it) to the ice step, so here their mixed layer (the
+// surface layer, and each layer whose top lies above OM_ML) takes
+// ICE_OCEAN_HEAT*dt, spread evenly over its depth, as the OML slab takes it
+// over HML. That carries the ocean-to-ice heat flux out of the column. Every
+// layer this leaves below Tf gives up (Tf-T)*rho*c*dz into the ice and is set
+// to Tf. The sums are double; heat a float32 temperature cannot yet resolve
+// (2 W m-2 for 600 s over a 30 m layer is 1e-5 K, under half a unit in the
+// last place at 271 K) waits in OWED (J m-2) for the next step instead of
+// being rounded away. Columns PWP does not own (land <= 1.5: land, lakes,
+// ice classified as land) hold no profile: their ocean heat stays the
+// prescribed boundary of the ice step, as with no ocean model.
+extern "C" __global__ void ice_ocean_freeze_pwp(
+    const float *mask,float *a,float *v,float *skin,float *hi,const float *s,
+    float *hs,float *growth,float *energy,float *error,float *ocean,
+    float *dhi,float *da,float *snow,float *snowh,float *albedo,float *znt,
+    float *sst,float *t,const float *z,const float *ml,const float *land,
+    const float *qice,const float *coupled,float *owed,
+    float hnew,float water_capacity,float dt,int levels,int n) {
+    int i=blockDim.x*blockIdx.x+threadIdx.x;
+    if(i>=n || mask[i]==0 || land[i]<=1.5f)return;
+    const double freezing=271.35f;
+    int m=0; double depth=0.;
+    for(int k=0;k<levels;k++){
+        int q=k*n+i; float top=k?z[q-n]:0.f;
+        if(k && top>=ml[i])break;
+        depth+=(double)z[q]-top; m=k+1;
+    }
+    double h=(coupled[i]>0.f?(double)qice[i]*dt:0.)+owed[i];
+    double change=h/(water_capacity*depth);
+    double heat=0., applied=0.;
+    for(int k=0;k<m;k++){
+        int q=k*n+i; float top=k?z[q-n]:0.f;
+        double dz=(double)z[q]-top, old=t[q], want=old+change;
+        if(want<freezing){heat+=(freezing-want)*water_capacity*dz; want=freezing;}
+        float now=(float)want;
+        applied+=((double)now-old)*water_capacity*dz;
+        t[q]=now;
+    }
+    owed[i]=(float)(h+heat-applied);
+    if(heat>0.)
+        freeze_heat_into_column(i,heat,a,v,skin,hi,s,hs,growth,energy,error,ocean,
+                                dhi,da,snow,snowh,albedo,znt,hnew);
+    sst[i]=t[i];
+}
+
+// Cold start of the 3D PWP owner beside the ice model: liquid water is never
+// seeded below Tf (the same rule ice_initialize applies to SST). Analysis or
+// climatology profiles carry water down to its salinity freezing point,
+// below the model's fixed Tf; left there, the first deepening of the mixed
+// layer froze the whole column's deficit within an hour (0.1 K over a 150 m
+// column is 0.2 m of ice), ice that no surface cooling made.
+extern "C" __global__ void ice_seed_pwp_profile(
+    const float *mask,const float *land,float *t,float *tini,float *sst,
+    int levels,int n) {
+    int i=blockDim.x*blockIdx.x+threadIdx.x;
+    if(i>=n || mask[i]==0 || land[i]<=1.5f)return;
+    for(int k=0;k<levels;k++){
+        int q=k*n+i;
+        t[q]=fmaxf(t[q],271.35f); tini[q]=fmaxf(tini[q],271.35f);
+    }
+    sst[i]=t[i];
 }

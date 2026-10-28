@@ -35,7 +35,9 @@ STREAM_DOORS = {"rw_igra2", "rw_amv", "rw_ndbc", "rw_gnssro", "rw_wis2", "rw_pre
                 # 2.9.4 (PyPI per-file limit): verification and post-run doors no forecast reaches.
                 "rw_hail", "rw_airnow", "rw_scoreboard", "rw_tc_fields", "rw_fire_indices",
                 # Post-2.9.4: native Rust coupled hydro output, fetched on first use.
-                "rw_nextgen_output"}
+                "rw_nextgen_output",
+                # 2.9.9 (PyPI per-file limit): the fixed-ladder probability renderer, which no forecast reaches.
+                "rw_probgrid"}
 PLATFORMS = ("linux-x86_64", "win-x86_64")
 REVISION = "a" * 40
 FETCH = "gpuwm fetch-bridges"

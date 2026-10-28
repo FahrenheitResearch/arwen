@@ -3953,7 +3953,9 @@ class RRTMGPRadiation:
             qc_cols, qi_cols, qc_bl=qc_bl, qi_bl=qi_bl,
             cldfra_bl=cldfra_bl,
             bl_pbl_physics=getattr(cfg, "bl_pbl_physics", 0),
-            icloud_bl=(getattr(cfg, "icloud_bl", 0) if icloud == 1 else 0))
+            icloud_bl=(getattr(cfg, "icloud_bl", 0) if icloud == 1 else 0),
+            bl_mynn_version=getattr(cfg, "bl_mynn_version", "wrf_461"),
+            temperature=tlay if active_bl else None)
         qc_cols, qi_cols, cldfra = merge_mynn_bl_clouds(
             qc_cols, qi_cols, cldfra, qc_bl=qc_bl, qi_bl=qi_bl,
             cldfra_bl=cldfra_bl,
@@ -3961,6 +3963,8 @@ class RRTMGPRadiation:
             icloud_bl=(getattr(cfg, "icloud_bl", 0) if icloud == 1 else 0),
             itimestep=(wrf_itimestep(state.elapsed_seconds, cfg.dt)
                        if active_bl else 1),
+            bl_mynn_version=getattr(cfg, "bl_mynn_version", "wrf_461"),
+            temperature=tlay if active_bl else None,
         )
         if scheme in SCHEME_RADII_COUPLINGS:
             # After the MYNN merge, so its subgrid cloud and fraction are

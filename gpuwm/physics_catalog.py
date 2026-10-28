@@ -1080,6 +1080,73 @@ def write_experiment(into: Path, out: Path, request: Mapping[str, Any]) -> list[
     return written
 
 
+def _follow_choices(settings: dict[str, Any], chosen: dict[str, str],
+                    suite_settings: Mapping[str, Any], *, explicit: set[str]) -> None:
+    """The companion edits a scheme choice carries into its suite, in place.
+
+    A choice is one family's scheme; the rest of the suite stays.  Three
+    things in the rest belong to the scheme that was swapped out, and
+    keeping them made the engine refuse the mix (U-E4: 46 suite/choice
+    pairs refused at every source and spacing, customer
+    run_5f83d3dcf5f1cec3):
+
+    * a sibling the chosen scheme declares it needs
+      (``requires_components``: MYJ needs the Eta surface layer, YSU and
+      Shin-Hong an MM5 one) comes with it, the first the registry lists,
+      unless the request chose that family itself;
+    * a parameter the suite read and the mix no longer reads (the HRRR
+      suite's ``thompson_version = 'wrf_39_noaa'`` once mp_physics is not
+      28, the GSD MYNN generation once the PBL is not MYNN) goes back to
+      its registry default, as an unread knob must
+      (:func:`gpuwm.physics_registry.registry_knob_is_read`);
+    * the WRF RRTMG mapping token follows the RRTMG port that runs: a
+      choice whose declared remedy moves 4/4 radiation to the legacy port
+      (Lin) leaves the suite's RTE+RRTMGP substitution token naming a
+      solver the run no longer has, so it takes the legacy token.
+    """
+
+    from gpuwm.config import (RRTMG_VARIANT_RTE_RRTMGP, WRF_RRTMG_LEGACY,
+                              WRF_RRTMG_SUBSTITUTION_TOKENS)
+    from gpuwm.physics_registry import registry_knob_is_read
+
+    registry = _registry()
+    menu = _menu()
+    for _ in range(len(menu)):
+        moved = False
+        for family in sorted(explicit | {f for f in chosen if f not in explicit}):
+            option = registry["components"].get(family, {}).get("options", {}).get(_registry_id(chosen.get(family)))
+            needs = ((option or {}).get("constraints") or {}).get("requires_components") or {}
+            for sibling, allowed in needs.items():
+                if sibling in explicit or _registry_id(chosen.get(sibling)) in allowed:
+                    continue
+                rows = [row for wanted in allowed for row in menu.get(sibling, {}).values()
+                        if row["registry_option_id"] == wanted
+                        and registry["components"][sibling]["options"][wanted].get("implemented") is True]
+                if not rows:
+                    continue
+                settings.update(rows[0]["settings"])
+                chosen[sibling] = rows[0]["id"]
+                moved = True
+        if not moved:
+            break
+    parameters = registry["parameters"]
+    for _ in range(len(parameters)):
+        reverted = False
+        for name, spec in parameters.items():
+            if (name not in settings or not isinstance(spec, Mapping) or "default" not in spec
+                    or settings[name] == spec["default"]):
+                continue
+            if registry_knob_is_read(name, suite_settings, registry) and not registry_knob_is_read(
+                    name, settings, registry):
+                settings[name] = spec["default"]
+                reverted = True
+        if not reverted:
+            break
+    if (settings.get("wrf_rrtmg_compatibility") in WRF_RRTMG_SUBSTITUTION_TOKENS
+            and settings.get("ra_rrtmg_variant", RRTMG_VARIANT_RTE_RRTMGP) != RRTMG_VARIANT_RTE_RRTMGP):
+        settings["wrf_rrtmg_compatibility"] = WRF_RRTMG_LEGACY
+
+
 def _settings(request: Mapping[str, Any]) -> tuple[str, dict[str, Any], dict[str, str], list[dict[str, Any]]]:
     suite = request.get("suite")
     # No suite named: the default at the request's grid, the one the run binds.
@@ -1092,6 +1159,7 @@ def _settings(request: Mapping[str, Any]) -> tuple[str, dict[str, Any], dict[str
         raise CatalogError(f"No suite called {base!r} on the Create page. Suites: "
                            f"{', '.join(shipped_profiles())}.") from error
     chosen = dict(_template_components(base) or {})
+    suite_settings = dict(settings)
     blocked: list[dict[str, Any]] = []
     for family, choice in (request.get("choices") or {}).items():
         if family == "radiation" and isinstance(choice, Mapping):
@@ -1109,6 +1177,8 @@ def _settings(request: Mapping[str, Any]) -> tuple[str, dict[str, Any], dict[str
                 "owner": f"gpuwm/physics_registry_v2.json#/components/{family}/options/{row['registry_option_id']}",
                 "message": f"{option.get('label', row['id'])}: "
                            f"{reachability.get('blocker') or 'declared unimplemented'}"})
+    _follow_choices(settings, chosen, suite_settings,
+                    explicit={str(family) for family in (request.get("choices") or {})})
     overrides = {str(key): value for key, value in (request.get("settings") or {}).items()}
     # A name RunConfig has no field for sets nothing: the probe and the
     # written file both drop it, so a misspelled mp_physcs was answered

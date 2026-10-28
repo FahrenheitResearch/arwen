@@ -1,6 +1,7 @@
 """Buffer and metadata adapter for the mandatory Rust host analysis kernels."""
 from __future__ import annotations
 import ctypes
+import threading
 import numpy as np
 
 
@@ -13,6 +14,28 @@ def _entry(name):
     return entry
 
 
+#: Columns per thread below which the hydrostatic kernel runs as one call (a thread costs more than it saves).
+HYDRO_COLUMNS_PER_THREAD = 16384
+
+_BOUND = {}
+_BOUND_LOCK = threading.Lock()
+
+
+def _bound(name, argtypes):
+    """The kernel with its argument types set once (per loaded library), so calls on many threads only read it."""
+    from gpuwm.core.portable_math import _load
+    key = (id(_load()), name)
+    entry = _BOUND.get(key)
+    if entry is None:
+        with _BOUND_LOCK:
+            entry = _BOUND.get(key)
+            if entry is None:
+                entry = _entry(name)
+                entry.argtypes = argtypes
+                _BOUND[key] = entry
+    return entry
+
+
 def binary(first, second, *, subtract=False, clip=False):
     """Float64 addition/subtraction, clipping and statistics in Rust."""
     first, second = np.broadcast_arrays(np.asarray(first, dtype=np.float64),
@@ -21,8 +44,8 @@ def binary(first, second, *, subtract=False, clip=False):
     first, second = (np.ascontiguousarray(v) for v in (first, second))
     out = np.empty_like(first)
     stats = np.empty(5, dtype=np.float64)
-    entry = _entry("gpuwm_analysis_binary_f64")
-    entry.argtypes = [ctypes.c_void_p] * 4 + [ctypes.c_size_t, ctypes.c_uint32, ctypes.c_uint32]
+    entry = _bound("gpuwm_analysis_binary_f64",
+                   [ctypes.c_void_p] * 4 + [ctypes.c_size_t, ctypes.c_uint32, ctypes.c_uint32])
     result = entry(first.ctypes.data, second.ctypes.data, out.ctypes.data, stats.ctypes.data,
                    out.size, int(subtract), int(clip))
     if result == 3:
@@ -71,8 +94,16 @@ def hydrostatic(state, before, after, *, hypsometric_opt, mup_after=None):
         raise HydrostaticError(f"hypsometric_opt must be 1 or 2, got {option}")
     if option == 2 and state.p_top is None:
         raise HydrostaticError("hypsometric_opt=2 needs state.p_top (load_base)")
+    from gpuwm.io.analysis_bundle import host_threads
+    if host_threads() > 1:
+        # the two totals on two threads; each is its own sum in species order, as before
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(2, thread_name_prefix="hydro-loading") as pool:
+            load_before, load_after = pool.map(loading, (before, after))
+    else:
+        load_before, load_after = loading(before), loading(after)
     arrays = [array(before["p"], shape), array(before["thp"], shape), array(after["thp"], shape),
-              array(before["qv"], shape), array(after["qv"], shape), loading(before), loading(after),
+              array(before["qv"], shape), array(after["qv"], shape), load_before, load_after,
               array(thb, shape), array(state.mub2d, (ny,nx)), array(state.mup, (ny,nx)),
               array(state.mup if mup_after is None else mup_after, (ny,nx))]
     for name in ("c1f","c2f","c1h","c2h","c3f","c4f","c3h","c4h","rdnw","rdn","dnw"):
@@ -82,10 +113,35 @@ def hydrostatic(state, before, after, *, hypsometric_opt, mup_after=None):
                       if unused else profile(name, nz+1 if name in ("c1f","c2f","c3f","c4f") else nz))
     constants = np.array([c.RD,c.RVOVRD,c.P0,c.RCP,float(state.p_top or 0.)], dtype=np.float64)
     phi, pressure = np.empty((nz+1,ny,nx),dtype=np.float64), np.empty(shape,dtype=np.float64)
-    pointers = (ctypes.c_void_p * len(arrays))(*(v.ctypes.data for v in arrays))
-    entry = _entry("gpuwm_analysis_hydro_f64")
-    entry.argtypes = [ctypes.POINTER(ctypes.c_void_p)] + [ctypes.c_void_p]*3 + [ctypes.c_size_t]*2 + [ctypes.c_uint32]*2
-    result = entry(pointers,constants.ctypes.data,phi.ctypes.data,pressure.ctypes.data,nz,ny*nx,option,int(mup_after is not None))
+    entry = _bound("gpuwm_analysis_hydro_f64",
+                   [ctypes.POINTER(ctypes.c_void_p)] + [ctypes.c_void_p]*3 + [ctypes.c_size_t]*2 + [ctypes.c_uint32]*2)
+    columns, mass = ny*nx, int(mup_after is not None)
+    from gpuwm.io.analysis_bundle import host_threads
+    threads = min(host_threads(), max(1, columns // HYDRO_COLUMNS_PER_THREAD))
+    if threads == 1:
+        pointers = (ctypes.c_void_p * len(arrays))(*(v.ctypes.data for v in arrays))
+        result = entry(pointers,constants.ctypes.data,phi.ctypes.data,pressure.ctypes.data,nz,columns,option,mass)
+    else:
+        # Single-core law (2026-10-27, DA cycle bundles): the kernel integrates every column on its own (no value
+        # crosses columns), so column blocks on threads (ctypes releases the GIL) give each column the one-call
+        # arithmetic, word for word.  3D fields are level-major (k*columns + col), so a block is copied out whole.
+        flat_phi, flat_p = phi.reshape(nz+1, columns), pressure.reshape(nz, columns)
+        edges = np.linspace(0, columns, threads+1).astype(np.int64)
+        def block(i):
+            a, b = int(edges[i]), int(edges[i+1])
+            part = [np.ascontiguousarray(v.reshape(v.shape[0], columns)[:, a:b]) if v.ndim == 3
+                    else np.ascontiguousarray(v.reshape(-1)[a:b]) if v.ndim == 2 else v for v in arrays]
+            out_phi, out_p = np.empty((nz+1, b-a)), np.empty((nz, b-a))
+            ptrs = (ctypes.c_void_p * len(part))(*(v.ctypes.data for v in part))
+            code = entry(ptrs,constants.ctypes.data,out_phi.ctypes.data,out_p.ctypes.data,nz,b-a,option,mass)
+            if code == 0:
+                flat_phi[:, a:b] = out_phi
+                flat_p[:, a:b] = out_p
+            return code
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(threads, thread_name_prefix="hydro-columns") as pool:
+            codes = list(pool.map(block, range(threads)))
+        result = next((code for code in codes if code), 0)
     if result == 3:
         raise HydrostaticError("the analysed hydrostatic pressure is not finite and positive or the geopotential increment is not finite")
     if result:

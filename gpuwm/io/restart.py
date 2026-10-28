@@ -96,6 +96,7 @@ from pathlib import Path
 import numpy as np
 
 from gpuwm import perf_timing
+from gpuwm.io.parallel_npz import write_npz
 from gpuwm.checkpoint_identity import (
     CONFIG_DIAGNOSTIC_FIELDS,
     CUMULUS_ALGORITHM_IDENTITIES,
@@ -645,6 +646,14 @@ STATE_INFRA_ATTRS = frozenset({
     # so any checkpoint written inside a window, and the final trajectory
     # digest of every IAU run on the tree route, raised RestartManifestError.
     "_iau_forcing",
+    # gpuwm.da.iau.IAU_AFTER_STEP_ATTRIBUTE: the analysis door's post-step
+    # acts for a STREAMED root (its dry-mass share of the IAU window and its
+    # balance probe, served per compute window by gpuwm.da.iau
+    # .IauSweepLease).  INFRA like the forcing above: the door rebuilds it
+    # from its bundle at every attach.  Without this entry classify_state_attr
+    # refuses the attribute, so every analysis-door checkpoint and the final
+    # trajectory digest raise RestartManifestError.
+    "_iau_after_step",
 })
 
 # --------------------------------------------------------------------------
@@ -4369,8 +4378,10 @@ def _publish_restart_payload(path: Path, payload: dict) -> Path:
     # Separate concurrent writers; each publishes one complete archive.
     temp = unique_temp_path(path)
     try:
-        with temp.open("wb") as stream:
-            np.savez(stream, **payload)
+        # np.savez's archive, byte for byte, CRC'd on every core instead of
+        # one (gpuwm.io.parallel_npz: the 3 km DA legs' np.savez ran on one
+        # core, 16-68 s a member when six legs ended together).
+        write_npz(temp, payload)
         # Atomic visibility was already sound; durability was not.  Closing
         # a file leaves its bytes in the page cache, so a machine or volume
         # crash could expose the published name with content that never
@@ -6259,6 +6270,18 @@ class PendingTreeCheckpoint:
     members on any failure, then records the root on the model and retires
     superseded sets, exactly as the synchronous writer does.
 
+    A publish on a background writer thread passes ``retire=False`` and the
+    stepping thread calls :meth:`retire_superseded` once it has joined the
+    writer (``_CheckpointPublisher.wait``).  The stepping thread is the one
+    that hands ``model._last_checkpoint`` to the run's progress callback,
+    and the supervisor heartbeat reads that set back in full
+    (``validate_manifest_checkpoint``) on that thread.  Retiring from the
+    writer thread removed the set the heartbeat was still reading: with
+    hourly checkpoints and ``--keep-checkpoints 1`` the 08Z publish deleted
+    the 07Z set mid-read and the run died with FileNotFoundError on its own
+    checkpoint 3-7 h into every 60 h GFS 12 km parent (ml-probs T1,
+    2026-10-27).
+
     ``deferrable`` says whether :meth:`publish` may run while the model
     steps on.  A resident member owns host copies of its arrays, and a
     member of a ranked domain borrows the domain's host store, which only a
@@ -6279,7 +6302,7 @@ class PendingTreeCheckpoint:
         for streamed in lenders:
             streamed.add_store_guard(self._released.wait)
 
-    def publish(self) -> Path:
+    def publish(self, *, retire: bool = True) -> Path:
         published: list[Path] = []
         paths: dict[int, Path] = {}
         try:
@@ -6299,9 +6322,19 @@ class PendingTreeCheckpoint:
             # not hold the next frame download forever.
             self.abandon()
         self._model._last_checkpoint = paths[self._root_id]
-        from gpuwm.resume import retire_superseded_checkpoints
-        retire_superseded_checkpoints(self.directory)
+        if retire:
+            self.retire_superseded()
         return paths[self._root_id]
+
+    def retire_superseded(self) -> list[Path]:
+        """Retire the sets this published generation supersedes.
+
+        The run's retention decides how many go (:mod:`gpuwm.resume`).  Call
+        it on the stepping thread: see the class docstring for why a
+        background writer must not.
+        """
+        from gpuwm.resume import retire_superseded_checkpoints
+        return retire_superseded_checkpoints(self.directory)
 
     def abandon(self) -> None:
         """Release the borrowed store without writing anything."""

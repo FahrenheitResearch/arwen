@@ -1,0 +1,66 @@
+{
+  "schema": "gpuwm-land-state-v1",
+  "purpose": "How a source's soil moisture reaches a land surface model whose soil hydraulics differ. Each source's soil model is a row here, never a code path. Defect it fixes: an ERA5 start copied HTESSEL soil moisture straight into RUC (top level 0.36 against HRRR's RUC 0.21 at the same cells), so latent heat took the sun and T2 ran 1-2 C cold from the first hour with no storms (WEATHER-AGI-2026-10-26 cold-teacher, Oklahoma 2024-05-06 18Z).",
+  "opt_out_env": "GPUWM_SOIL_LAND_STATE",
+  "soil_models": {
+    "htessel": {
+      "description": "ECMWF HTESSEL (ERA5, IFS): four layers 0-7, 7-28, 28-100, 100-289 cm.",
+      "layer_ladders_cm": [[[0, 7], [7, 28], [28, 100], [100, 289]]],
+      "hydraulics": "htessel"
+    },
+    "noah": {
+      "description": "Noah / Noah-MP family (GFS, GEFS, GDAS, CFS, NAM; WRF Noah and Noah-MP): four layers 0-10, 10-40, 40-100, 100-200 cm.",
+      "layer_ladders_cm": [[[0, 10], [10, 40], [40, 100], [100, 200]]],
+      "hydraulics": "SOILPARM:STAS"
+    },
+    "ruc": {
+      "description": "RUC LSM (HRRR, RAP, RRFS): nine nodes 0, 1, 4, 10, 30, 60, 100, 160, 300 cm.",
+      "node_ladders_cm": [[0, 1, 4, 10, 30, 60, 100, 160, 300]],
+      "hydraulics": "SOILPARM:STAS-RUC"
+    }
+  },
+  "targets": {
+    "2": "noah",
+    "4": "noah",
+    "3": "ruc"
+  },
+  "hydraulics": {
+    "htessel": {
+      "citation": "IFS Documentation Cy47r3 Part IV (Physical processes), Table 8.9: van Genuchten soil classes of HTESSEL (Balsamo et al. 2009, J. Hydrometeor. 10, 623-643). Field capacity at -0.33 bar, permanent wilting point at -15 bar.",
+      "classes": {
+        "1": {"name": "coarse", "wilting_point": 0.059, "field_capacity": 0.244},
+        "2": {"name": "medium", "wilting_point": 0.151, "field_capacity": 0.347},
+        "3": {"name": "medium fine", "wilting_point": 0.133, "field_capacity": 0.383},
+        "4": {"name": "fine", "wilting_point": 0.279, "field_capacity": 0.448},
+        "5": {"name": "very fine", "wilting_point": 0.335, "field_capacity": 0.541},
+        "6": {"name": "organic", "wilting_point": 0.267, "field_capacity": 0.663}
+      },
+      "class_from_stas": {
+        "comment": "The target grid's own 16-class STAS (USDA) texture, assigned to the FAO texture class HTESSEL uses by the FAO class limits (coarse: clay < 18 % and sand > 65 %; medium: clay 18-35 % with sand > 15 %, or clay < 18 % with sand 15-65 %; medium fine: clay < 35 % and sand < 15 %; fine: clay 35-60 %; very fine: clay > 60 %) at each USDA class's centroid. The source cell's moisture index is formed with the source model's hydraulics for the soil at the point; the horizontal texture structure is the separate soil_downscale step.",
+        "1": 1, "2": 1, "3": 1, "4": 2, "5": 3, "6": 2, "7": 2, "8": 3, "9": 2,
+        "10": 4, "11": 4, "12": 4, "13": 6, "15": 2, "16": 2
+      }
+    }
+  },
+  "donors": [
+    {
+      "id": "hrrr-f00-soil",
+      "description": "HRRR's own cycled RUC soil analysis (wrfprs f00, TSOIL/SOILW at the nine RUC nodes) on the HRRR CONUS grid, from the NOAA HRRR archive on AWS.",
+      "soil_model": "ruc",
+      "fields": ["soil_moisture"],
+      "valid_from": "2014-09-30T00:00:00Z",
+      "coverage_box": {"comment": "lat/lon box around the HRRR CONUS grid corners (21.14N 122.72W, 47.84N 134.10W, 47.84N 60.92W, 21.14N 72.43W); a domain with no point inside is not fetched for", "lat": [21.0, 53.0], "lon": [-134.2, -60.8]},
+      "transport": {
+        "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.{cycle:%Y%m%d}/conus/hrrr.t{cycle:%H}z.wrfprsf00.grib2",
+        "index_suffix": ".idx",
+        "kind": "soil"
+      },
+      "grib2": {
+        "soil_moisture": {"discipline": 2, "category": 0, "parameter": 192, "level_type": 106},
+        "earth_radius_m": 6371229.0
+      },
+      "water_value": 1.0,
+      "search_radius_cells": 3
+    }
+  ]
+}

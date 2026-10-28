@@ -11,6 +11,7 @@ complete limited-area initial state.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime
 from enum import Enum
 import hashlib
 import math
@@ -56,6 +57,30 @@ class SourceKind(str, Enum):
     POSTPROCESSED_GUIDANCE = "postprocessed_guidance"
     WRF_ARCHIVE = "wrf_archive"
     HYDRO_FORCING = "hydro_forcing"
+
+
+@dataclass(frozen=True)
+class SourceTopEra:
+    """One era of a model-level source's native top, measured from its files.
+
+    ``start`` is the first cycle (``YYYY-MM-DDTHH`` UTC) the era covers, or
+    ``""`` for the source's whole earlier record.  ``top_pa`` is the model
+    top (Pa) the source model ran with: on the source's own eta ladder a
+    target with this ``p_top`` co-locates its top level with the source's,
+    and any higher target would be extrapolated past the analysis.
+    """
+
+    start: str
+    top_pa: float
+    basis: str
+
+    def __post_init__(self) -> None:
+        if self.start:
+            datetime.strptime(self.start, "%Y-%m-%dT%H")
+        if not math.isfinite(float(self.top_pa)) or float(self.top_pa) <= 0.0:
+            raise ValueError("SourceTopEra.top_pa must be a positive finite pressure (Pa)")
+        if not self.basis.strip():
+            raise ValueError("SourceTopEra.basis must say how the top was established")
 
 
 class AdapterStatus(str, Enum):
@@ -197,6 +222,17 @@ class SourceAdapter:
     #: :func:`fetch_model_top_pa`, so a run whose own ladder tops out
     #: above the certified one fetches the levels it needs with no flag.
     extendable_source_top_pa: float | None = None
+    #: The native model top (Pa) a model-level source's column reaches,
+    #: by the cycle era it was produced in, oldest first: a published fact
+    #: of the source's own vertical grid that changed with an upgrade
+    #: (HRRR raised its top from 20 to 15 hPa with v4).  Read through
+    #: :func:`source_top_pa_for_cycle`, so an emitted configuration whose
+    #: requested top lies above what its cycle's era reaches is served at
+    #: the era's top before anything is downloaded.  Breakage it prevents:
+    #: the hrrr_v4_gsd41 recipe (p_top 1500 Pa) on a pre-v4 HRRR cycle
+    #: fetched 26 GB and then refused at root_initialize ("target pressure
+    #: lies above source top").  Empty means one top for every cycle.
+    source_top_eras: tuple["SourceTopEra", ...] = ()
     #: Where this source's native grid reaches, or ``None`` for a global
     #: product.  A declared window (see :mod:`gpuwm.source_coverage`) is what
     #: lets `gpuwm domain` refuse an out-of-coverage plan AT PLAN TIME with
@@ -420,6 +456,7 @@ def _adapter(
     fetch_requires_retrieve: bool = False,
     certified_source_top_pa: float | None = None,
     extendable_source_top_pa: float | None = None,
+    source_top_eras: tuple[SourceTopEra, ...] = (),
     coverage: CoverageWindow | None = None,
     cycles: CycleGrid | None = None,
     archives: tuple[ArchiveWindow, ...] = (),
@@ -491,6 +528,7 @@ def _adapter(
         fetch_requires_retrieve=fetch_requires_retrieve,
         certified_source_top_pa=certified_source_top_pa,
         extendable_source_top_pa=extendable_source_top_pa,
+        source_top_eras=tuple(source_top_eras),
         coverage_window=coverage,
         cycle_grid=cycles,
         archive_windows=archives,
@@ -639,6 +677,30 @@ _HRRR_NATIVE_ARCHIVE = ArchiveWindow(
     ("https://registry.opendata.aws/noaa-hrrr-pds/",
      "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/?list-type=2&max-keys=2&prefix=hrrr.20140730/conus/hrrr.t18z.wrfnatf00",
      "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/?list-type=2&max-keys=2&prefix=hrrr.20140730/conus/hrrr.t18z.wrfprsf00"),
+)
+
+#: HRRR's native model top by era, MEASURED 2026-10-27 from the archive's
+#: own wrfnat f00 files (PRES on hybrid level 50, the top mass level, read
+#: by byte range on noaa-hrrr-bdp-pds): 2230.3 Pa on every cycle checked
+#: from the v3 start (2018-07-13 12Z) through 2020-12-01 23Z, and
+#: 2139-2238 Pa on the v1/v2 sigma grid (2015-06-01, 2017-06-01 12Z); then
+#: 1731.5 Pa from the 2020-12-02 00Z cycle on (2020-12-02 00/06/09-12Z,
+#: 2024-06-01 12Z).  On HRRR's own eta ladder (the hrrr_v4_gsd41 recipe's)
+#: those are the top levels of a 2000 Pa and a 1500 Pa model top.  The
+#: same switch measured on the preparation (updraft-factory, 2026-10-27):
+#: 2020-05-22, 2020-08-10, 2019-06-20 and 2019-03-24 12Z refused p_top
+#: 1500 Pa at root_initialize, 2020-05-22 prepared at 2000 Pa, and
+#: 2022-06-11/15 prepared at 1500 Pa.
+_HRRR_NATIVE_TOP_ERAS = (
+    SourceTopEra(
+        "", 2000.0,
+        "HRRR v1-v3 (to the 2020-12-01 23Z cycle) ran with a 20 hPa model "
+        "top: wrfnat hybrid level 50 reads 2230.3 Pa (v3) on the "
+        "archive's own files"),
+    SourceTopEra(
+        "2020-12-02T00", 1500.0,
+        "HRRR v4 raised the model top to 15 hPa: wrfnat hybrid level 50 "
+        "reads 1731.5 Pa from the 2020-12-02 00Z cycle on"),
 )
 
 
@@ -827,6 +889,7 @@ _ADAPTERS = (
         # boundary carries them as the start state does.
         boundary_species=("qc", "qr", "qi", "qs", "qg"),
         archives=(_HRRR_NATIVE_ARCHIVE,),
+        source_top_eras=_HRRR_NATIVE_TOP_ERAS,
         name="HRRR (native hybrid levels)",
         default_product="sfc",
         required_products=("sfc", "nat"),
@@ -1781,6 +1844,8 @@ _ADAPTERS = (
         archives=(ArchiveWindow("aws", _HRRR_NATIVE_ARCHIVE.start,
                                 _HRRR_NATIVE_ARCHIVE.note,
                                 _HRRR_NATIVE_ARCHIVE.documentation),),
+        # The same wrfnat objects, so the same measured tops.
+        source_top_eras=_HRRR_NATIVE_TOP_ERAS,
         name="HRRR native hybrid analysis (mapped)",
         aliases=("hrrr-mapped-native",), upstream_model_id="hrrr",
         default_product="wrfnat", max_hour=48,
@@ -2597,6 +2662,42 @@ def source_coverage_window(source: str) -> CoverageWindow | None:
     """SOURCE's declared native-grid window, or ``None`` when it is global."""
 
     return get_source_adapter(source).coverage_window
+
+
+def source_top_pa_for_cycle(source, cycle) -> float | None:
+    """The native model top (Pa) SOURCE's column reaches at CYCLE, or ``None``.
+
+    Read from the row's ``source_top_eras`` (the last era starting at or
+    before the cycle), never from a list of model names.  ``None`` when the
+    row declares no eras, the source is unknown, or the cycle is not a
+    concrete time (``latest``, absent): the preparation's decoded-data
+    check then stays the only verdict, as before.
+    """
+
+    from datetime import timezone
+
+    if not source or cycle is None:
+        return None
+    try:
+        adapter = get_source_adapter(str(source))
+    except (TypeError, ValueError):
+        return None
+    if not adapter.source_top_eras:
+        return None
+    if isinstance(cycle, str):
+        if cycle == "latest":
+            return None
+        from gpuwm.source_availability import parse_cycle
+        cycle = parse_cycle(cycle)
+    if not isinstance(cycle, datetime):
+        return None
+    if cycle.tzinfo is not None:
+        cycle = cycle.astimezone(timezone.utc).replace(tzinfo=None)
+    top = None
+    for era in adapter.source_top_eras:
+        if not era.start or cycle >= datetime.strptime(era.start, "%Y-%m-%dT%H"):
+            top = float(era.top_pa)
+    return top
 
 
 def fetch_model_top_pa(source, p_top_pa) -> float | None:

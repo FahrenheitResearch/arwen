@@ -116,3 +116,60 @@ def test_a_checkpoint_outside_a_go_run_folder_is_left_to_the_run_plan(tmp_path):
     assert go_cli._checkpoint_run_bindings(args, run["config"]) is None
     assert args.prepared_root is None
     assert go_cli._checkpoint_run_bindings(_args(), run["config"]) is None
+
+
+# The two-step front door: `gpuwm go dom.toml --prepare-only`, then
+# `gpuwm go dom.toml --prepared-root <run>/prepared` with the SAME
+# dom.toml.  The preparation bound its bundle to the generated
+# authority/experiment.toml, so the second step was refused "supplied
+# experiment_config differs from the portable source manifest" (ml-probs
+# T1, 2026-10-27: every 12 km GFS parent across 10 dates).
+
+
+def test_a_prepare_only_bundle_forecasts_under_the_launched_config(tmp_path):
+    run = _run_folder(tmp_path)
+    args = _args(prepared_root=run["folder"] / "prepared")
+    bound = go_cli._prepared_run_bindings(args, run["config"])
+    assert bound == run["generated"]
+    assert Path(args.wps_namelist) == run["generated_wps"]
+    assert Path(args.prepared_root) == run["folder"] / "prepared"
+    # The generated config itself names the same run's configuration.
+    args = _args(prepared_root=run["folder"] / "prepared")
+    assert go_cli._prepared_run_bindings(args, run["generated"]) \
+        == run["generated"]
+
+
+def test_a_prepared_root_keeps_an_explicit_namelist(tmp_path):
+    run = _run_folder(tmp_path)
+    wps = tmp_path / "mine.wps"
+    wps.write_text("&share\n/\n", encoding="utf-8")
+    args = _args(prepared_root=run["folder"] / "prepared", wps_namelist=wps)
+    assert go_cli._prepared_run_bindings(args, run["config"]) \
+        == run["generated"]
+    assert args.wps_namelist == wps
+
+
+def test_a_prepared_root_under_an_edited_config_is_refused_by_name(tmp_path):
+    run = _run_folder(tmp_path)
+    run["config"].write_text("[experiment]\nname = \"edited\"\n",
+                             encoding="utf-8")
+    with pytest.raises(go_cli.GoRefusal, match="is not that configuration"):
+        go_cli._prepared_run_bindings(
+            _args(prepared_root=run["folder"] / "prepared"), run["config"])
+    (tmp_path / "again").mkdir()
+    run = _run_folder(tmp_path / "again")
+    run["generated"].write_text("[experiment]\nname = \"x\"\n",
+                                encoding="utf-8")
+    with pytest.raises(go_cli.GoRefusal, match="no longer match"):
+        go_cli._prepared_run_bindings(
+            _args(prepared_root=run["folder"] / "prepared"), run["config"])
+
+
+def test_a_bundle_outside_a_go_run_folder_is_left_to_the_run_plan(tmp_path):
+    run = _run_folder(tmp_path)
+    loose = tmp_path / "bundle"
+    loose.mkdir()
+    args = _args(prepared_root=loose)
+    assert go_cli._prepared_run_bindings(args, run["config"]) is None
+    assert args.wps_namelist is None
+    assert go_cli._prepared_run_bindings(_args(), run["config"]) is None

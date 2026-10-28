@@ -551,3 +551,71 @@ def test_a_vertical_bearing_borrow_requires_the_same_ladder():
         _compose_bound_fields(
             primary, donor, binding_name="donor", binding=binding,
         )
+
+
+def _lagged_primary(cycle, times):
+    fields = {
+        (time, None, "surface_pressure"): _direct(
+            "surface_pressure", time, np.full((2, 2), 100000.0), cycle=cycle)
+        for time in times
+    }
+    return _collection((51.5, 51.75), (260.0, 260.25), fields)
+
+
+def _lagged_donor(cycle, times):
+    base = np.arange(9, dtype=np.float64).reshape(3, 3)
+    fields = {(time, None, "terrain_height"): _direct("terrain_height", time, base, cycle=cycle)
+              for time in times}
+    return _collection((52.0, 51.75, 51.5), (-100.0, -99.75, -99.5), fields)
+
+
+def test_window_start_broadcast_takes_the_run_s_own_record_at_the_first_time():
+    """A time-lagged member's soil is its own run's state at its start.
+
+    Breakage it prevents: the HRRR 07Z run started at f03 (a 10Z DA
+    member) borrowed the 07Z analysis soil, three to seventeen hours
+    stale. For a forecast from its own cycle the record taken is the
+    analysis, exactly as the analysis broadcast takes it.
+    """
+    binding = dict(_BINDING, time_alignment="source_cycle_window_start_broadcast")
+    cycle = datetime(2023, 7, 10, 7)
+    first, later = cycle + timedelta(hours=3), cycle + timedelta(hours=4)
+    combined, receipt = _compose_bound_fields(
+        _lagged_primary(cycle, (first, later)), _lagged_donor(cycle, (first,)),
+        binding_name="donor", binding=binding)
+    assert receipt["status"] == "PASS"
+    assert receipt["donor_valid_times"] == [first.isoformat()]
+    assert receipt["broadcast_primary_valid_times"] == [later.isoformat()]
+    for time in (first, later):
+        assert combined.direct[(time, None, "terrain_height")].source_cycle == cycle
+    # A later forcing pass (its first primary time one lead after the run's
+    # start) carries the same start record. Breakage it prevents: the HRRR
+    # 08Z member of a 10Z start refused in "Initialize remaining forcing
+    # states" because the pass's first time was 11Z. Which lead the record
+    # is (the start, not the stale analysis) is the fetch's job:
+    # test_fetch_route_donor_table asks the donor for the start lead only.
+    after = later + timedelta(hours=1)
+    combined, receipt = _compose_bound_fields(
+        _lagged_primary(cycle, (later, after)), _lagged_donor(cycle, (first,)),
+        binding_name="donor", binding=binding)
+    assert receipt["donor_valid_times"] == [first.isoformat()]
+    # A record valid after the pass's first time cannot be its start.
+    with pytest.raises(ValueError, match="first primary time"):
+        _compose_bound_fields(
+            _lagged_primary(cycle, (first, later)), _lagged_donor(cycle, (later,)),
+            binding_name="donor", binding=binding)
+    # Nor can another run's record valid at the right time.
+    with pytest.raises(ValueError, match="first primary time"):
+        _compose_bound_fields(
+            _lagged_primary(cycle, (first, later)),
+            _lagged_donor(cycle + timedelta(hours=3), (first,)),
+            binding_name="donor", binding=binding)
+    # From its own cycle, the same analysis record the analysis broadcast takes.
+    own_window, own = _compose_bound_fields(
+        _primary((first, later)), _donor((first,)), binding_name="donor", binding=binding)
+    analysis_window, analysis = _compose_bound_fields(
+        _primary((first, later)), _donor((first,)), binding_name="donor", binding=_BINDING)
+    for time in (first, later):
+        np.testing.assert_array_equal(
+            own_window.direct[(time, None, "terrain_height")].values,
+            analysis_window.direct[(time, None, "terrain_height")].values)

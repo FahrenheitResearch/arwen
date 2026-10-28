@@ -3341,6 +3341,27 @@ def validate_physics_plan(
         # still win over both.
         settings.update({name: value for name, value in template_layer.items()
                          if name not in overridden})
+        # A template knob the overrides leave unread returns to its default
+        # (U-E4): the GSD MYNN 4.1 suite's thompson_version='wrf_39_noaa'
+        # under any microphysics but mp_physics=28, or its gsd_41 MYNN
+        # generation under another PBL, named a scheme the plan no longer
+        # runs and the run door refused it.  Only when a component is
+        # overridden, so a template as written resolves exactly as before.
+        if any(template_components.get(component_id) != option_id
+               for component_id, option_id in resolved_components.items()):
+            for _ in range(len(template_layer)):
+                reverted = False
+                for name in template_layer:
+                    spec = parameter_specs.get(name)
+                    if (name in overridden or not isinstance(spec, dict)
+                            or "default" not in spec
+                            or settings.get(name) == spec["default"]
+                            or registry_knob_is_read(name, settings, selected_registry)):
+                        continue
+                    settings[name] = spec["default"]
+                    reverted = True
+                if not reverted:
+                    break
 
         for name, value in domain_parameters.items():
             spec = parameter_specs.get(name)

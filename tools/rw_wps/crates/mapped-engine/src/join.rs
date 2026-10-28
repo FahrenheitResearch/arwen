@@ -59,10 +59,11 @@ pub const TERRAIN_TIME_ALIGNMENTS: [&str; 2] = ["valid_time_exact", "cycle_invar
 
 /// The DECLARED clocks a cross-source binding can run on
 /// (`mapped_composition._BOUND_TIME_ALIGNMENTS`).
-pub const BOUND_TIME_ALIGNMENTS: [&str; 4] = [
+pub const BOUND_TIME_ALIGNMENTS: [&str; 5] = [
     "cycle_invariant_broadcast",
     "source_cycle_analysis_broadcast",
     "source_cycle_analysis_select_broadcast",
+    "source_cycle_window_start_broadcast",
     "valid_time_exact",
 ];
 
@@ -1157,6 +1158,53 @@ pub fn plan_bound_fields(
                     format!("binding {quoted} lacks the primary cycle's exact analysis")))?;
                 if entry.0.source_cycle != primary_cycles[0] {
                     return Err(frame_invalid("selected surface donor is a forecast rather than a cycle analysis"));
+                }
+                Some(*entry)
+            }
+            // The donor's ONE record from the primary's own cycle, valid at
+            // the run's start, carried to every later time. The run's start
+            // is no later than the first primary time of this call (a
+            // remaining-forcing pass starts one lead in) and no earlier than
+            // the primary cycle. For a forecast that starts at its cycle this
+            // is the record the analysis broadcast takes. Breakage it
+            // prevents: a time-lagged member (HRRR 07Z started at f03) took
+            // its soil from the 07Z analysis, three to seventeen hours stale,
+            // so the top RUC nodes started at another hour's temperature.
+            "source_cycle_window_start_broadcast" => {
+                if primary_cycles.len() != 1 {
+                    return Err(mixed_cycles(
+                        "source-cycle window-start broadcast",
+                        &primary_cycles,
+                    ));
+                }
+                let first = keys.iter().map(|key| key.0).min().ok_or_else(|| {
+                    frame_invalid("a window-start broadcast needs a primary valid time")
+                })?;
+                if supplied.len() != 1 {
+                    return Err(frame_invalid(format!(
+                        "contributing source binding {quoted} supplies {} at {} valid \
+                         times; the window-start broadcast requires exactly one \
+                         record, valid at the run's start",
+                        crate::refusal::python_repr(name),
+                        supplied.len()
+                    )));
+                }
+                let (valid_time, entry) = supplied.iter().next().expect("one record");
+                if *valid_time < primary_cycles[0]
+                    || *valid_time > first
+                    || entry.0.source_cycle != primary_cycles[0]
+                {
+                    return Err(frame_invalid(format!(
+                        "contributing source binding {quoted} supplies {} valid at {} \
+                         from cycle {}; the window-start broadcast needs the primary \
+                         cycle {}'s own record valid between that cycle and the \
+                         first primary time {}",
+                        crate::refusal::python_repr(name),
+                        naive_isoformat(*valid_time),
+                        naive_isoformat(entry.0.source_cycle),
+                        naive_isoformat(primary_cycles[0]),
+                        naive_isoformat(first)
+                    )));
                 }
                 Some(*entry)
             }

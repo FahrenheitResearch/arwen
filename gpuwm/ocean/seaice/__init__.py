@@ -10,7 +10,7 @@ from gpuwm.core.device_cache import cuda_cache
 STATE = ("ice_volume", "ice_snow_mass", "ice_skin", "ice_ocean_mask",
          "ice_rain", "ice_snowfall", "ice_growth", "ice_melt",
          "ice_energy", "ice_energy_error", "ice_ocean_exchange", "ice_ocean_heat", "ice_thickness_change",
-         "ice_concentration_change")
+         "ice_concentration_change", "ice_ocean_owed", "ice_ocean_coupled")
 OUTPUT = {"ice_thickness_change": ("ICETHICKCHANGE", "m"),
           "ice_concentration_change": ("ICECONCCHANGE", "1"),
           "ice_volume": ("ICEVOLUME", "m"),
@@ -150,7 +150,7 @@ def step(driver, atmosphere, cfg):
     _launch("ice_step", forcing,
         ("xice", "ice_volume", "ice_snow_mass", "ice_skin", "ice_ocean_mask",
          "ice_rain", "ice_snowfall", "ice_growth", "ice_melt", "ice_energy",
-         "ice_energy_error", "ice_ocean_exchange", "ice_ocean_heat",
+         "ice_energy_error", "ice_ocean_exchange", "ice_ocean_heat", "ice_ocean_coupled",
          "ice_thickness_change", "ice_concentration_change", "ice_thickness", "ice_snow_depth",
          "tsk", "sst", "ice_air", "ice_qair", "psfc", "chs", "swdown", "glw",
          "hfx", "lh", "qfx", "qsfc", "albedo", "emiss", "snow", "snowh", "znt"),
@@ -166,15 +166,90 @@ def blend_after_ocean(fields):
         _launch("ice_blend_ocean", fields, ("ice_ocean_mask", "xice", "ice_skin", "sst", "tsk"))
 
 
-def reconcile_ocean(fields, cfg):
+_FREEZE_COLUMN = ("ice_ocean_mask", "xice", "ice_volume", "ice_skin",
+                  "ice_thickness", "ice_snow_mass", "ice_snow_depth", "ice_growth",
+                  "ice_energy", "ice_energy_error", "ice_ocean_exchange",
+                  "ice_thickness_change", "ice_concentration_change", "snow", "snowh",
+                  "albedo", "znt", "sst")
+
+
+def _freeze_pwp(fields, new_ice_thickness, water_capacity, dt):
+    """Apply the ice step's ocean heat to the 3D PWP mixed layer and freeze it.
+
+    The 3D PWP owner (sf_ocean_physics=2, the multi-day default) carries no
+    OML ``tml``/``hml`` slab: its mixed layer is the level-major ``om_tmp``
+    profile over the layer bottoms ``om_depth`` down to ``om_ml``. Reading the
+    OML slab here was KeyError 'tml' at the first surface step of every run of
+    48 h or longer with ice on any water the sea-ice model owns.
+
+    Where the ice step set the surface fluxes (``ice_ocean_coupled``: ice
+    present before or after it), ``ice_ocean_heat`` (W m-2, into the ocean)
+    replaces the atmospheric surface heat, as on the OML route, so the
+    ocean-to-ice heat flux leaves the PWP column; the PWP step skips its
+    surface heat there. Ice-free water keeps the atmosphere's own fluxes.
+    """
+    shape = fields["tsk"].shape
+    levels = fields["om_tmp"].shape[0]
+    arrays = []
+    for key in _FREEZE_COLUMN:
+        a = fields[key]
+        if a.shape != shape or a.dtype != np.float32 or not a.flags.c_contiguous:
+            raise ValueError(f"sea ice {key} requires contiguous float32 {shape}")
+        arrays.append(a)
+    for key, want in (("om_tmp", (levels, *shape)), ("om_depth", (levels, *shape)),
+                      ("om_ml", shape), ("_pwp_land", shape),
+                      ("ice_ocean_heat", shape), ("ice_ocean_coupled", shape),
+                      ("ice_ocean_owed", shape)):
+        a = fields[key]
+        if a.shape != want or a.dtype != np.float32 or not a.flags.c_contiguous:
+            raise ValueError(f"3D PWP {key} requires contiguous float32 {want}")
+        arrays.append(a)
+    n = fields["tsk"].size
+    _module().get_function("ice_ocean_freeze_pwp")(((n+127)//128,), (128,),
+        (*arrays, np.float32(new_ice_thickness), np.float32(water_capacity),
+         np.float32(dt), np.int32(levels), np.int32(n)))
+
+
+def seed_pwp_profile(fields):
+    """Raise a cold-started 3D PWP profile to Tf where the ice model owns water.
+
+    ``fields`` is the ocean's own view (``tsk`` is the water SST under ice).
+    Called by the PWP initialiser only on a cold start and only when this
+    model is active; a checkpoint restore brings back the seeded profile.
+    """
+    if "ice_volume" not in fields or "om_tmp" not in fields:
+        return
+    shape = fields["tsk"].shape
+    levels = fields["om_tmp"].shape[0]
+    arrays = []
+    for key, want in (("ice_ocean_mask", shape), ("_pwp_land", shape),
+                      ("om_tmp", (levels, *shape)), ("om_tini", (levels, *shape)),
+                      ("tsk", shape)):
+        a = fields[key]
+        if a.shape != want or a.dtype != np.float32 or not a.flags.c_contiguous:
+            raise ValueError(f"3D PWP {key} requires contiguous float32 {want}")
+        arrays.append(a)
+    n = fields["tsk"].size
+    _module().get_function("ice_seed_pwp_profile")(((n+127)//128,), (128,),
+        (*arrays, np.int32(levels), np.int32(n)))
+
+
+def reconcile_ocean(fields, cfg, *, dt=None):
+    """After the ocean step: freeze supercooled water into the ice.
+
+    ``dt`` (s) is the surface step the ocean just took. The 3D PWP route needs
+    it: there the ice step's ``ice_ocean_heat`` rate is applied here.
+    """
     from gpuwm.surface_ocean import ocean_option
     constants = ocean_option(cfg.sf_ocean_physics)["constants"]
     if "ice_volume" in fields:
-        _launch("ice_ocean_freeze", fields,
-            ("ice_ocean_mask", "xice", "ice_volume", "ice_skin",
-             "ice_thickness", "ice_snow_mass", "ice_snow_depth", "ice_growth",
-             "ice_energy", "ice_energy_error", "ice_ocean_exchange",
-             "ice_thickness_change", "ice_concentration_change", "snow", "snowh", "albedo", "znt",
-             "sst", "tml", "hml"),
-            (cfg.seaice_new_ice_thickness, constants["rhowater"]*constants["cwater"]))
+        capacity = constants["rhowater"]*constants["cwater"]
+        if "om_tmp" in fields:
+            if dt is None or not dt > 0:
+                raise ValueError("reconcile_ocean needs the surface step dt on the 3D PWP route: "
+                                 "without it the ice-ocean heat flux would never leave the ocean column")
+            _freeze_pwp(fields, cfg.seaice_new_ice_thickness, capacity, dt)
+        else:
+            _launch("ice_ocean_freeze", fields, (*_FREEZE_COLUMN, "tml", "hml"),
+                    (cfg.seaice_new_ice_thickness, capacity))
         blend_after_ocean(fields)

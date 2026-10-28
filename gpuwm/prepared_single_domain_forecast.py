@@ -1705,6 +1705,23 @@ def _completed_history_inventory(records, schedule, *, captured_paths=None):
     return inventory, {}
 
 
+def _hash_bound_history_cadences(domain) -> tuple[float, float | None]:
+    """(alarm cadence, full-frame cadence or None) of one hash-bound domain.
+
+    A domain with a quick-look stream (``quicklook = {...}``,
+    :attr:`gpuwm.experiment.DomainConfig.full_history_interval_s`) rings
+    its history alarm at the quick-look cadence and writes FULL frames at
+    the interval its TOML declares as ``history_interval_s``; every other
+    domain has one cadence and ``None`` here.  Both values are the
+    experiment's own stream, so a caller naming either one asks for the
+    frames this run writes.
+    """
+
+    full = getattr(domain, "full_history_interval_s", None)
+    return (float(domain.history_interval_s),
+            None if full is None else float(full))
+
+
 def _validate_hash_bound_history_cadence(
         exp, history_interval_seconds: float,
 ) -> dict[str, object]:
@@ -1712,9 +1729,17 @@ def _validate_hash_bound_history_cadence(
 
     requested = float(history_interval_seconds)
     domain = exp.root
-    experiment_cadence = float(domain.history_interval_s)
+    experiment_cadence, full_cadence = _hash_bound_history_cadences(domain)
     run_copy_cadence = float(domain.run.output_interval_s)
-    if requested != experiment_cadence:
+    # A quick-look domain's TOML declares the FULL cadence as
+    # history_interval_s, and that is what an omitted flag defaults to
+    # (_clock_defaults); the parsed alarm is the quick-look cadence.  Both
+    # name this run's own stream (U-E3, 2026-10-26: a member-roster member
+    # with --quicklook-interval 300 on 15-minute frames refused its own
+    # default, 900 against the 300 s alarm, before the first step).
+    declared_cadence = (experiment_cadence if full_cadence is None
+                        else full_cadence)
+    if requested not in (experiment_cadence, declared_cadence):
         # THE BREAKAGE THIS REFUSAL PREVENTS (open-defects ledger A15,
         # 2026-10-05): this check used to warn and run the experiment's
         # cadence anyway.  A 1 km dataset run that asked for 10-minute
@@ -1729,8 +1754,11 @@ def _validate_hash_bound_history_cadence(
         raise ValueError(
             f"--history-interval-seconds {requested:g} asks for a history "
             f"frame every {requested:g} s, but the hash-bound experiment "
-            f"declares history_interval_s = {experiment_cadence:g} s on "
-            f"d{int(domain.grid_id):02d}, and that is the only cadence this "
+            f"declares history_interval_s = {declared_cadence:g} s on "
+            f"d{int(domain.grid_id):02d}"
+            + ("" if full_cadence is None else
+               f" (with a {experiment_cadence:g} s quick-look stream)")
+            + ", and that is the only cadence this "
             "prepared run can write; running on would silently deliver "
             "the experiment's frames instead of the ones asked for.  Omit "
             "the flag to run the experiment's cadence, or set "
@@ -1767,6 +1795,12 @@ def _validate_hash_bound_history_cadence(
         "schema": "gpuwm-hash-bound-history-cadence-v1",
         "requested_seconds": requested,
         "experiment_seconds": experiment_cadence,
+        # The quick-look stream: the schedule above is the alarm (every
+        # frame written, quick-look subsets under quicklook/ included);
+        # full frames land every full_history_seconds.
+        **({} if full_cadence is None else {
+            "quicklook_seconds": experiment_cadence,
+            "full_history_seconds": full_cadence}),
         "exact_model_steps_per_interval": None if adaptive else int(exact_steps),
         **({"adaptive_event_landing": True} if adaptive else {}),
         "complete_intervals": periods,
@@ -4586,7 +4620,11 @@ def _execution_plan_receipt(
             "reason": "prepared forecast runner executes hash-bound d01 only",
         })
     source_history = float(source_exp.root.history_interval_s)
-    if source_history != float(history_interval_seconds):
+    # A quick-look domain's declared (full) cadence names the same stream
+    # as its alarm; neither is an output-cadence override (U-E3).
+    if float(history_interval_seconds) not in {
+            value for value in _hash_bound_history_cadences(source_exp.root)
+            if value is not None}:
         overrides.append({
             "kind": "output-cadence",
             "source_experiment_seconds": source_history,
@@ -7863,13 +7901,23 @@ class _CheckpointPublisher:
     previous one.  A failed write is raised on the stepping thread at the
     next checkpoint or at :meth:`wait`, which the runner calls before it
     reports success, so a run never claims a checkpoint it does not have.
+
+    ``then`` (the generation's ``retire_superseded``) runs in :meth:`wait`,
+    on the thread that waits -- the stepping thread -- and only after a
+    successful write.  The job publishes with ``retire=False``: a set
+    retired from this thread could be the one the stepping thread had just
+    handed its progress callback, which reads it back in full.  The breakage
+    (ml-probs T1, 2026-10-27): every 60 h GFS 12 km parent with hourly
+    checkpoints and ``--keep-checkpoints 1`` died 3-7 h in with
+    FileNotFoundError on the set the heartbeat was validating.
     """
 
     def __init__(self):
         self._thread = None
         self._failure = None
+        self._then = None
 
-    def submit(self, job) -> None:
+    def submit(self, job, *, then=None) -> None:
         self.wait()
 
         def run():
@@ -7878,6 +7926,7 @@ class _CheckpointPublisher:
             except BaseException as exc:  # noqa: BLE001 - re-raised by wait()
                 self._failure = exc
 
+        self._then = then
         self._thread = threading.Thread(
             target=run, name="gpuwm-checkpoint-writer", daemon=True)
         self._thread.start()
@@ -7887,10 +7936,13 @@ class _CheckpointPublisher:
         if thread is not None:
             thread.join()
         failure, self._failure = self._failure, None
+        then, self._then = self._then, None
         if failure is not None:
             raise RuntimeError(
                 "the checkpoint writer failed: "
                 f"{type(failure).__name__}: {failure}") from failure
+        if then is not None:
+            then()
 
 
 class _LandingObservers:
@@ -10451,7 +10503,7 @@ def run_prepared_forecast(
             pending.abandon()
             raise
 
-        def publish():
+        def publish(retire=True):
             # A checkpoint is published only after every history frame up
             # to its valid time is durable, so a resume never starts past a
             # frame that is missing.
@@ -10460,7 +10512,7 @@ def run_prepared_forecast(
                     writers.drain()
                 else:
                     history_durable()
-                path = pending.publish()
+                path = pending.publish(retire=retire)
                 checkpoints.append(str(Path(path).resolve()))
                 checkpoint_ticks[int(ticks)] = checkpoints[-1]
                 step_log.restart_written(
@@ -10474,7 +10526,11 @@ def run_prepared_forecast(
 
         if pending.deferrable and history_durable is not None:
             try:
-                checkpoint_publisher.submit(publish)
+                # Superseded sets are retired on this thread at the next
+                # wait (see _CheckpointPublisher), never by the writer.
+                checkpoint_publisher.submit(
+                    lambda: publish(retire=False),
+                    then=pending.retire_superseded)
             except BaseException:
                 pending.abandon()
                 raise

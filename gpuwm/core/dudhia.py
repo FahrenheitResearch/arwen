@@ -380,6 +380,8 @@ class DudhiaShortwaveRadiation:
             icloud_bl=(getattr(cfg, "icloud_bl", 0) if self.icloud != 2 else 0),
             itimestep=(wrf_itimestep(state.elapsed_seconds, cfg.dt)
                        if active_bl else 1),
+            bl_mynn_version=getattr(cfg, "bl_mynn_version", "wrf_461"),
+            temperature=self._top_down(temperature) if active_bl else None,
         )
 
         from gpuwm.core.physics import (

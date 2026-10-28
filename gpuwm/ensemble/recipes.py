@@ -273,14 +273,19 @@ class SourceRecipe:
         """Keep donor interpolation coverage separate from the base window."""
         if trajectory.identity not in {item.identity for item in self.acquisitions()}:
             raise ValueError("source is outside the frozen recipe acquisition population")
-        bracket = self.kind == "wofs" or self.kind == "recentered" and trajectory != self.base
-        return trajectory.window(self.start, self.end, native_bracketing=bracket)
+        # Every recipe kind acquires the published knots that enclose its
+        # window, as the single-run door does: native preparation
+        # interpolates the boundary tendency between them. Before, only wofs
+        # and recentered donors bracketed, so a 2 h GFS member-roster
+        # (sensitivity) run was refused with "gfs does not publish the
+        # requested f0/f2 valid-time knots" (WOOF run_0cd03a9ca0a8f9fb).
+        return trajectory.window(self.start, self.end, native_bracketing=True)
 
     def fetch_argv(self, trajectory: SourceTrajectory, root: Path, *,
                    p_top_pa: float | None = None) -> tuple[str, ...]:
         self.acquisition_window(trajectory)
         return trajectory.fetch_argv(self.start, self.end, root, p_top_pa=p_top_pa,
-            native_bracketing=self.kind == "wofs" or self.kind == "recentered" and trajectory != self.base)
+                                     native_bracketing=True)
 
     def select_members(self, indices) -> SourceRecipe:
         """Replay or repartition existing members without renumbering seeds."""
@@ -338,7 +343,7 @@ def build_recipe(*, source: str, cycle: datetime, start: datetime, end: datetime
     member_seed(base_seed, 0)
     base = SourceTrajectory(source, cycle, member)
     start, end = _utc(start), _utc(end, whole_hour=kind != "wofs")
-    base.window(start, end, native_bracketing=kind == "wofs")
+    base.window(start, end, native_bracketing=True)
     adapter = get_source_adapter(base.source)
     if kind == "auto":
         if count == 1:
@@ -398,7 +403,7 @@ def build_recipe(*, source: str, cycle: datetime, start: datetime, end: datetime
                 continue
             candidate = SourceTrajectory(base.source, candidate_cycle, base.member)
             try:
-                candidate.window(start, end)
+                candidate.window(start, end, native_bracketing=True)
             except ValueError:
                 continue
             candidates.append(candidate)
@@ -434,7 +439,7 @@ def build_recipe(*, source: str, cycle: datetime, start: datetime, end: datetime
     if kind not in ("control", "surface-state", "member-roster", "wofs") and len({item.identity for item in selected}) != count:
         raise ValueError("the member roster repeats a source trajectory and would inflate effective ensemble size")
     for item in (*selected, *population):
-        item.window(start, end, native_bracketing=kind == "wofs" or kind == "recentered" and item != base)
+        item.window(start, end, native_bracketing=True)
     return SourceRecipe(kind, base, start, end,
                         tuple(RecipeMember(index, member_seed(base_seed, index), item)
                               for index, item in enumerate(selected)), population,

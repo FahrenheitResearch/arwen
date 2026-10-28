@@ -2457,8 +2457,11 @@ def _downscale_main(args, reservation: _OutputReservation,
         # keeps every set.
         keep_checkpoints=int(keep_checkpoints or 0),
         warm_start=warm_start,
-        # A segment of a moving step-down: the forecast's own start.
-        simulation_start=getattr(args, "simulation_start", None))
+        # A segment of a moving step-down: the forecast's own start, and
+        # the place its frames record (on the parent's lattice), so the
+        # segments' frames are one moving nest's history.
+        simulation_start=getattr(args, "simulation_start", None),
+        history_parent_start=getattr(args, "history_parent_start", None))
     # From here the directory belongs to the run: a forecast that dies
     # mid-integration leaves frames a reader needs, and a report.json
     # whose `result` is FAIL rather than one claiming it finished.

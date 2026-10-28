@@ -48,8 +48,15 @@ def merge_mynn_bl_clouds(
     bl_pbl_physics: int,
     icloud_bl: int,
     itimestep: int,
+    bl_mynn_version: str = "wrf_461",
+    temperature=None,
 ):
     """Apply ``module_radiation_driver.F:1403-1429`` in place.
+
+    ``bl_mynn_version = "gsd_41"`` applies that generation's merge instead
+    (:func:`_merge_gsd41`, which needs the layer ``temperature``), so every
+    radiation coupling hands its scheme the cloud the legacy RRTMG adapter
+    hands its own (kernels/rrtmg_legacy_adapter.cu ``rla_mynn_gsd41``).
 
     ``cldfra`` may be ``None`` for Dudhia, which consumes condensate mass but
     has no cloud-fraction input.  The non-MYNN return happens before inspecting
@@ -79,6 +86,9 @@ def merge_mynn_bl_clouds(
         xp = np
     real = qc.dtype.type
 
+    if bl_mynn_version == "gsd_41":
+        return _merge_gsd41(qc, qi, cldfra, qc_bl=qc_bl, cldfra_bl=cldfra_bl,
+                            temperature=temperature, itimestep=itimestep, xp=xp)
     # WRF applies the mass merge on timestep one too.  Only the fraction
     # replacement is delayed until the carried field has a previous interval.
     cloudy_bl = cldfra_bl > real(MERGE_CLDFRA_BL_ABOVE)
@@ -91,6 +101,52 @@ def merge_mynn_bl_clouds(
     return qc, qi, cldfra
 
 
+def _gsd41_split(qc, qi, qc_bl, cldfra_bl, temperature, xp):
+    """Where the GSD MYNN v4.1 merge adds water, and how much of each phase.
+
+    NOAA-EMC WRF 3.9 module_radiation_driver.F:1256-1303: in-cloud QC_BL
+    times CLDFRA_BL goes in only where neither resolved phase is present
+    (qc < 1e-6 and qi < 1e-8) and CLDFRA_BL > 0.001, split liquid/ice by
+    MIN(1, MAX(0, (T-254)/15)).  Each product is rounded to FP32 in the
+    adapter kernel's order: ``(QC_BL*liq)*CLDFRA_BL``.
+    """
+
+    if temperature is None:
+        raise ValueError("the gsd_41 MYNN radiation merge needs the layer temperature")
+    if temperature.shape != qc.shape:
+        raise ValueError("the gsd_41 MYNN radiation merge needs temperature on the cloud fields' shape")
+    real = qc.dtype.type
+    where = ((qc < real(MERGE_QC_BELOW)) & (qi < real(MERGE_QI_BELOW))
+             & (cldfra_bl > real(MERGE_CLDFRA_BL_ABOVE)))
+    liquid = xp.clip((temperature.astype(qc.dtype, copy=False) - real(254.0)) / real(15.0),
+                     real(0.0), real(1.0))
+    add_l = xp.where(where, (qc_bl * liquid) * cldfra_bl, real(0.0))
+    add_i = xp.where(where, (qc_bl * (real(1.0) - liquid)) * cldfra_bl, real(0.0))
+    return where, add_l, add_i
+
+
+def _merge_gsd41(qc, qi, cldfra, *, qc_bl, cldfra_bl, temperature, itimestep, xp):
+    """The GSD MYNN v4.1 merge (``rla_mynn_gsd41``) on any radiation coupling.
+
+    On the first model step the fraction takes CLDFRA_BL only where it
+    exceeds 0.001; after it, everywhere.  The mass goes in by
+    :func:`_gsd41_split`.  Ported from the legacy RRTMG adapter so that
+    radiation choice no longer decides whether a gsd_41 run's subgrid cloud
+    is 1/CLDFRA_BL times too thick (U-E4).
+    """
+
+    real = qc.dtype.type
+    where, add_l, add_i = _gsd41_split(qc, qi, qc_bl, cldfra_bl, temperature, xp)
+    if cldfra is not None:
+        if itimestep == 1:
+            cldfra[...] = xp.where(cldfra_bl > real(MERGE_CLDFRA_BL_ABOVE), cldfra_bl, cldfra)
+        else:
+            cldfra[...] = cldfra_bl
+    qc[...] = xp.where(where, qc + add_l, qc)
+    qi[...] = xp.where(where, qi + add_i, qi)
+    return qc, qi, cldfra
+
+
 def mynn_bl_cloud_supplied(
     qc,
     qi,
@@ -100,8 +156,13 @@ def mynn_bl_cloud_supplied(
     cldfra_bl=None,
     bl_pbl_physics: int,
     icloud_bl: int,
+    bl_mynn_version: str = "wrf_461",
+    temperature=None,
 ):
     """Where :func:`merge_mynn_bl_clouds` adds MYNN water: ``(liquid, ice)``.
+
+    Under ``bl_mynn_version = "gsd_41"`` the layers are the ones that
+    generation's merge gives nonzero liquid or ice (:func:`_gsd41_split`).
 
     Each is a boolean array of the layers the merge gives nonzero QC_BL or
     QI_BL, or ``None`` when the merge is off.  Call it on the grid-scale
@@ -129,6 +190,13 @@ def mynn_bl_cloud_supplied(
     if any(array.shape != qc.shape for array in arrays[1:]):
         raise ValueError("MYNN radiation cloud fields must share one shape")
     real = qc.dtype.type
+    if bl_mynn_version == "gsd_41":
+        if any(hasattr(array, "__cuda_array_interface__") for array in arrays):
+            import cupy as xp
+        else:
+            xp = np
+        where, add_l, add_i = _gsd41_split(qc, qi, qc_bl, cldfra_bl, temperature, xp)
+        return where & (add_l > real(0.0)), where & (add_i > real(0.0))
     cloudy_bl = cldfra_bl > real(MERGE_CLDFRA_BL_ABOVE)
     liquid = (qc < real(MERGE_QC_BELOW)) & cloudy_bl & (qc_bl > real(0.0))
     ice = (qi < real(MERGE_QI_BELOW)) & cloudy_bl & (qi_bl > real(0.0))

@@ -2167,7 +2167,13 @@ class TiledRun:
             sweep_seconds: list[float] = []
             sweep_clocks: list[dict] = []
             stochastic = getattr(self, "_ensemble_stochastic_lease", None)
-            execution_graphs = None if stochastic is not None else graph_steppers
+            # The domain's IAU (gpuwm.da.iau.IauSweepLease): each window's
+            # step folds the forcing cut to it, and a door's post-step acts
+            # reach the window before its scatter.  A captured graph has no
+            # place for a per-window forcing, so it steps ordinarily.
+            iau = getattr(self, "_iau_sweep_lease", None)
+            execution_graphs = (None if stochastic is not None or iau is not None
+                                else graph_steppers)
             if stochastic is not None and graph_steppers is not None:
                 self._ensemble_stochastic_graph_fallback = "ordinary window step preserves the live full-domain stochastic pattern"
             for istep in range(nsteps):
@@ -2179,6 +2185,8 @@ class TiledRun:
                 _t_sweep = _time.perf_counter()
                 if stochastic is not None:
                     stochastic.begin(cfg, windows=len(specs))
+                if iau is not None:
+                    iau.begin(windows=len(specs))
                 begin_wrf_cfl_domain_step(cfg)
                 if execution_graphs is not None:
                     # Under graph_reuse="sweep" the sweep index IS the cache
@@ -2233,6 +2241,11 @@ class TiledRun:
                             stream.wait_event(compute_done)
                         if stochastic is not None:
                             stochastic.bind_window(tiles[b], tile_cfg, tspec, itile, stream=stream)
+                        if iau is not None:
+                            iau.bind_window(tiles[b], tspec, itile)
+                        elif "_iau_forcing" in vars(tiles[b]):
+                            # a released lease's last window forcing
+                            del tiles[b]._iau_forcing
                         set_wrf_cfl_tile_window(cfg.grid_id, tspec)
                         if timeline:
                             began = cp.cuda.Event()
@@ -2352,6 +2365,12 @@ class TiledRun:
                             # the buffer's own stream; the tile's INTERIOR is
                             # exactly what the scatter below will write.
                             health.tile(tiles[b], tspec, itile)
+                        if iau is not None:
+                            # After the readers above, as the resident door
+                            # acts after the step's health checks: the
+                            # window's share of a post-step increment, ahead
+                            # of the scatter (ev_stepped below orders it).
+                            iau.after_window(tiles[b], tspec, itile, stream=stream)
                         if post_step_hook is not None:
                             # The WRITER at the same instant: it clears the
                             # tile's one-frame REFL_10CM handoff, after the
@@ -2397,6 +2416,10 @@ class TiledRun:
                     for stream in streams:
                         stream.synchronize()
                     stochastic.finish()
+                if iau is not None:
+                    # host bookkeeping only: the step is booked once, after
+                    # every window issued it
+                    iau.finish()
                 if defer_seam:
                     # THE DEFERRED SEAM: nothing here waits.  The last
                     # tiles' scatters drain UNDER the next step's gathers

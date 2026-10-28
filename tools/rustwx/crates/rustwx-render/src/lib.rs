@@ -1020,7 +1020,14 @@ fn with_render_state_profile_with_style<T>(
                 } else {
                     plot_style.render_density(request.render_density)
                 },
-                legend: request.legend,
+                // A theme that names both a product's band edges and one
+                // colour per band (the tc wind ladder) draws those bands as
+                // listed, with a tick on every edge (34, 50, 64 ... kt).
+                legend: if theme::active_theme().product_has_banded_scale(&request.field.product) {
+                    LegendControls { mode: LegendMode::Thresholds, ..request.legend }
+                } else {
+                    request.legend
+                },
             },
         )
     };

@@ -52,9 +52,38 @@ def test_analyzed_vegetation_survives_runtime_selection_exactly():
     assert initial_vegetation_fraction(met, static, datetime(2026, 10, 2)) is vegetation
     legacy = initial_vegetation_fraction(SimpleNamespace(fields={}), static, datetime(2026, 10, 2))
     np.testing.assert_array_equal(legacy, np.full((2, 2), 25.0))
+    # [U-E1] A cell outside 0-100 % takes the climatology, never a refusal
+    # of the whole run (HRRR 2025-05-19 18Z was refused after 1,270 s).
     met.fields["VEGFRA"] = np.full((2, 2), 100.1)
-    with pytest.raises(ValueError, match="percent"):
+    np.testing.assert_array_equal(
+        initial_vegetation_fraction(met, static, datetime(2026, 10, 2)),
+        np.full((2, 2), 25.0))
+    met.fields["VEGFRA"] = np.ones((3, 2))
+    with pytest.raises(ValueError, match="different vegetated area"):
         initial_vegetation_fraction(met, static, datetime(2026, 10, 2))
+
+
+def test_analyzed_vegetation_repairs_bad_cells_one_by_one(capsys):
+    """[U-E1] HRRR 2025-05-19 18Z: interpolated 100 % cells land a few ulps
+    above 100 and must stay the analysis; missing or sentinel cells take the
+    GREENFRAC climatology cell by cell; every other cell keeps the analysis."""
+    from gpuwm.ingest.vegetation import initial_vegetation_fraction
+    static = {"LANDMASK": np.array([[1, 1, 1], [1, 0, 1]]),
+              "GREENFRAC": np.full((12, 2, 3), 0.25)}
+    above = np.nextafter(np.float32(100.0), np.float32(200.0))
+    analyzed = np.array([[above, 40.0, np.nan], [-1.0e-6, 9999.0, 61.5]],
+                        dtype=np.float32)
+    got = initial_vegetation_fraction(
+        SimpleNamespace(fields={"VEGFRA": analyzed}), static, datetime(2025, 5, 19, 18))
+    assert got.dtype == np.float32
+    np.testing.assert_array_equal(
+        got, np.array([[100.0, 40.0, 25.0], [0.0, 25.0, 61.5]], np.float32))
+    err = capsys.readouterr().err
+    assert "2 cell(s) within" in err and "2 missing or out-of-range cell(s) (1 on land)" in err
+    # A wholly valid analysis is returned as the very object, untouched.
+    clean = np.array([[0.0, 100.0, 3.0], [4.0, 5.0, 6.0]], np.float32)
+    assert initial_vegetation_fraction(
+        SimpleNamespace(fields={"VEGFRA": clean}), static, datetime(2025, 5, 19)) is clean
 
 
 def test_source_runtime_declaration_refuses_a_dropped_initial_field():

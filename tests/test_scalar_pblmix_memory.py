@@ -25,9 +25,11 @@ def test_scalar_diffusion_off_adds_no_memory_charge():
 def test_scalar_diffusion_prices_both_live_grid_banks_and_chunk_work(monkeypatch):
     import gpuwm.core.preflight as preflight
     monkeypatch.setattr(preflight, "mynn_pbl_column_chunk", lambda cfg: 7)
+    # mp=28: the family MYNN's wrapper solves itself.  Every other scheme's
+    # scalars take the shared post-PBL arm (the test below).
     cfg = RunConfig(nx=8, ny=6, nz=50, bl_pbl_physics=5, scalar_pblmix=1,
-                    dx=3000.0, dy=3000.0, ztop=20000.0, dt=15.0,
-                    run_seconds=60.0)
+                    mp_physics=28, dx=3000.0, dy=3000.0, ztop=20000.0,
+                    dt=15.0, run_seconds=60.0)
     values = sum(math.prod(shape) for shape in mynn_scalar_transient_shapes(cfg).values())
     # Coupling can retain last step's four fields through the composed
     # tendency slot while creating four fresh fields beside four raw rates.
@@ -38,6 +40,19 @@ def test_scalar_diffusion_prices_both_live_grid_banks_and_chunk_work(monkeypatch
     small_grid_values = sum(math.prod(shape) for shape in
                             mynn_scalar_transient_shapes(cfg).values())
     assert small_grid_values > values
+
+
+def test_scalar_diffusion_after_mynn_prices_the_schemes_own_scalars():
+    """U-E4: under MYNN a scheme other than mp=28 is mixed by the shared arm,
+    one raw and one coupled rate per diffused scalar plus the mass
+    coefficient; a scheme with none (WSM6) keeps only the coefficient."""
+    base = dict(nx=8, ny=6, nz=50, bl_pbl_physics=5, scalar_pblmix=1,
+                dx=3000.0, dy=3000.0, ztop=20000.0, dt=15.0, run_seconds=60.0)
+    for mp, species in ((8, 1), (18, 4), (50, 3), (6, 0)):
+        shapes = mynn_scalar_transient_shapes(RunConfig(mp_physics=mp, **base))
+        chunk = 48 if species else 0
+        assert shapes == {"pbl_scalar/local_diffusion_peak":
+                          ((2 * species + 1) * 50 * 48 + (11 * 50 + 1) * chunk,)}, mp
 
 
 def test_scalar_diffusion_launcher_allocations_match_the_priced_chunk():

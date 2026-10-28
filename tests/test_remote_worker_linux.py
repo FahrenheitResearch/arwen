@@ -119,8 +119,10 @@ def test_job_survives_controller_disconnect_and_reconnects(case, disconnect):
     process = subprocess.Popen([sys.executable, "-u", str(controller), str(REPO), disconnect],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     try:
-        wait_for(lambda: (root / "launched.json").exists())
-        wait_for(lambda: (root / "ready").exists())
+        # A loaded host starts the controller's interpreter slowly (a 15 s wait expired once with the
+        # suite at twice its usual wall time); the file is written whole only once it is non-empty.
+        wait_for(lambda: (root / "launched.json").exists() and (root / "launched.json").read_text(), seconds=60)
+        wait_for(lambda: (root / "ready").exists(), seconds=60)
         result = json.loads((root / "launched.json").read_text())
         identifier = result["job"]["id"]
         directory = root / ".arwen-jobs" / identifier
@@ -177,8 +179,9 @@ def test_stop_reaps_owned_descendants_and_spares_unrelated_process(case, descend
                                  start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         directory = launch(parent)
-        wait_for(lambda: (root / "descendant-ready").exists())
-        pid = int((root / "descendant-ready").read_text())
+        # exists() can see the file between its creation and its write (2.9.8 pass 2 R5: int('') under load).
+        pid = int(wait_for(lambda: (root / "descendant-ready").exists()
+                           and (root / "descendant-ready").read_text().strip(), seconds=60))
         descendant = rw._process(pid)
         assert descendant
         record = rw._record(directory)

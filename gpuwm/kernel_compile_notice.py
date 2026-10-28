@@ -256,7 +256,10 @@ def scan_kernel_cache(cache_dir: Path | None = None
 def _probe_entries(paths: list[str]) -> list[str | None]:
     """``_entry_architecture`` of every path, in order, probed on a thread pool when there are many."""
 
-    workers = min(32, os.cpu_count() or 1)
+    from gpuwm.ingest.preparation_workers import cpu_budget
+
+    # Affinity capped by the cgroup CPU quota (U-E5: nproc 256, quota 61.44).
+    workers = min(32, cpu_budget()["available_cpus"])
     if len(paths) < 512 or workers < 2:
         return [_entry_architecture(path) for path in paths]
     from concurrent.futures import ThreadPoolExecutor

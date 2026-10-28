@@ -311,16 +311,19 @@ class MemberSession:
             pending = write_tree_restart(out, tree, valid, sealed_forcing_extension=False, defer_publish=True)
             history_durable = writers.durability_barrier()
 
-            def publish():
+            def publish(retire=True):
                 if history_durable is None:
                     writers.drain()
                 else:
                     history_durable()
-                path = pending.publish()
+                path = pending.publish(retire=retire)
                 member.checkpoints[int(ticks)] = Path(tree._last_checkpoint if path is None else path)
 
             if pending.deferrable and history_durable is not None:
-                publisher.submit(publish)
+                # Superseded sets are retired on this thread at the next wait
+                # (see prepared_single_domain_forecast._CheckpointPublisher).
+                publisher.submit(lambda: publish(retire=False),
+                                 then=pending.retire_superseded)
             else:
                 try:
                     publish()

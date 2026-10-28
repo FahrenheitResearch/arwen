@@ -20,7 +20,7 @@ The generated config and its `.ladder.json` explain the complete roster before a
 
 A config may request a fractional-hour duration, such as `run_seconds = 600`. The WoFS recipe preserves that end time and acquires source knots enclosing it for native temporal interpolation. Restart snapshots retain full byte-hash verification; independent files are checked concurrently within the host's CPU allocation.
 
-Forecast-source members prepare concurrently across the host's available CPUs; exact source/physics bindings share one preparation. On each card, WoFS runs as many independent member streams together as live memory admission allows, with a separate queue for each card. An explicit `max_ordinary_members_per_device` still selects a smaller concurrency limit. Checkpointed runs use the same placement, holding diagnostic submissions while each durable restart snapshot seals. Snapshots copy new files without changing live output metadata, then reuse unchanged sealed copies between generations.
+Forecast-source members prepare concurrently across the host's available CPUs; exact source/physics bindings share one preparation. On each card, WoFS runs as many independent member streams together as live memory admission allows, with a separate queue for each card. An explicit `max_ordinary_members_per_device` still selects a smaller concurrency limit. Checkpointed runs use the same placement, holding diagnostic submissions while each durable restart snapshot seals. Snapshots hard-link member checkpoint sets (write-once, so a seal adds no checkpoint bytes), copy other new files without changing live output metadata, then reuse unchanged sealed copies between generations.
 
 ## Member ladder
 

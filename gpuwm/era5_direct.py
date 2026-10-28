@@ -72,6 +72,7 @@ from gpuwm.ingest.preprocess_backend import (
     resolve_preprocess_backend,
 )
 from gpuwm.ingest.real import initialize_real
+from gpuwm.ingest.land_state import land_state_context
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.ingest.cg_topo import RootTerrainBlend
 from gpuwm.ingest.soil import soil_source_orography
@@ -919,6 +920,9 @@ def prepare_era5_wrf(
         # lapse two arguments up: the target grid knows things about the
         # land surface a 0.25 degree forcing mesh cannot carry.
         soil_mesh=soil_mesh_plan_from_case(snapshots[0], grid, declared),
+        # Where and when, for a same-model soil donor (gpuwm/ingest/
+        # land_state.py: HRRR's RUC soil for a RUC run over CONUS).
+        land_state=land_state_context(grid, times[0]),
         route=_WATER_ROUTE)
     # LOUD when it happened, silent when it did not: the SMCDRY floor
     # receipt is only bound into the prepared metadata/proof when at

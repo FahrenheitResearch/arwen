@@ -38,6 +38,21 @@ def test_resident_increment_bundle_is_byte_identical(pair, tmp_path):
         assert _sha(tmp_path / "from-file" / name) == _sha(tmp_path / "resident" / name)
 
 
+def test_bundle_threads_write_the_one_thread_bytes(pair, tmp_path, monkeypatch):
+    # single-core law (2026-10-27): the field loops, the balance and the digests run on threads; every byte of the
+    # bundle is the one-thread bundle's
+    background, analysis = pair
+    inc = tmp_path / "source-increments.nc"
+    ab.write_increment(analysis, background, inc, fields="all")
+    arrays = ab.read_increment(inc)
+    for threads in ("1", "4"):
+        monkeypatch.setenv("GPUWM_BUNDLE_THREADS", threads)
+        ab.make_bundle(tmp_path / f"threads-{threads}", background=background, increment_arrays=arrays,
+                       iau_window_s=600.0, **bundle_identity())
+    for name in ("analysis.nc", "increment.nc", "manifest.json"):
+        assert _sha(tmp_path / "threads-1" / name) == _sha(tmp_path / "threads-4" / name)
+
+
 def test_resident_increment_refuses_broadcast_shape(pair, tmp_path):
     background, analysis = pair
     inc = tmp_path / "source-increments.nc"

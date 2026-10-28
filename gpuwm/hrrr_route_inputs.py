@@ -1928,11 +1928,84 @@ def configuration_reading_sources(source) -> tuple[str, ...]:
     return tuple(found)
 
 
-def run_route_inputs(config_path, exp, *, raw, into=None):
+def beside_root_disagreement(config_path, exp) -> tuple[str, ...]:
+    """The d01 trajectory fields the set beside ``config_path`` holds differently.
+
+    The root preparation reads the configuration itself
+    (``tools.prepare_hrrr_wrf --experiment-config``) and the hierarchy
+    reads d01 out of the namelist pair, then binds the two by
+    :func:`gpuwm.hrrr_hierarchy_direct.root_binding_differences`.  A set a
+    door wrote before the configuration last changed therefore cannot run:
+    WOOF canary run_0771cd8814b6e7f8 (HRRR 2026-03-10 12Z, 3 km + 1 km)
+    had its set written by ``gpuwm domain``, then ``[shared]
+    gsd_diagnostics = 1`` added to the TOML, and was refused after a
+    20 GB fetch and the root preparation with "native namelist d01
+    trajectory controls differ from the sealed root preparation:
+    run.gsd_diagnostics".
+
+    Asked by rendering the set from the configuration (keeping the beside
+    WPS namelist) and binding the two d01 imports by the hierarchy's own
+    rule, so the importer reads both sides the same way.  Equal namelist
+    text, a configuration the writer cannot carry, and a beside pair
+    the importer refuses all answer ``()``: the set beside is then read as
+    before, and the hierarchy reports anything wrong with it in its own
+    words.  Only d01 is compared, because only d01 is bound; a hand edit
+    to a child domain in the set beside still runs.
+    """
+
+    import tempfile
+
+    config_path = Path(config_path)
+    beside = route_input_paths(config_path)
+    with tempfile.TemporaryDirectory(prefix="arwen-route-inputs-") as staging:
+        target = Path(staging) / config_path.name
+        try:
+            write_hrrr_route_inputs(
+                target, exp,
+                wps_text=beside["wps_namelist"].read_text(encoding="utf-8"),
+                writer=lambda path, content: path.write_text(
+                    content, encoding="utf-8"))
+        except ValueError:
+            return ()
+        rendered = route_input_paths(target)
+        if (rendered["namelist_input"].read_text(encoding="utf-8")
+                == beside["namelist_input"].read_text(encoding="utf-8")):
+            return ()
+        from gpuwm.hrrr_hierarchy_direct import (
+            _native_experiment, _sealed_root_rrtmg_compatibility,
+            _sealed_root_rrtmg_variant, root_binding_differences)
+        from gpuwm.ingest.prepared_cache import prepared_domain_config_identity
+
+        # The keywords the hierarchy imports under come from the sealed
+        # root, which the preparation resolved from this configuration.
+        root = {"domain_config": prepared_domain_config_identity(exp.domains[0])}
+        keywords = {
+            "rrtmg_variant": _sealed_root_rrtmg_variant(root),
+            "rrtmg_compatibility": _sealed_root_rrtmg_compatibility(root),
+            "acknowledgements": tuple(getattr(exp, "acknowledgements", ())),
+        }
+        try:
+            ours, _, _ = _native_experiment(
+                rendered["wps_namelist"], rendered["namelist_input"], **keywords)
+            theirs, _, _ = _native_experiment(
+                beside["wps_namelist"], beside["namelist_input"], **keywords)
+        except ValueError:
+            return ()
+    return tuple(sorted(root_binding_differences(
+        prepared_domain_config_identity(ours.domains[0]), theirs.domains[0])))
+
+
+def run_route_inputs(config_path, exp, *, raw, into=None, report=None):
     """The four files one run of ``config_path`` hands this route.
 
-    The set beside the configuration when it is COMPLETE: that is what a
-    door wrote, and it is what the route has always read.  Otherwise the
+    The set beside the configuration when it is COMPLETE and agrees with
+    it: that is what a door wrote, and it is what the route has always
+    read.  A complete set whose d01 disagrees with the configuration
+    (:func:`beside_root_disagreement`: it was written before the
+    configuration last changed) is not read, because the root preparation
+    reads the configuration and the hierarchy would refuse the pair after
+    the fetch; the run writes the set from the configuration instead and
+    ``report["disagreeing"]`` names the fields.  Otherwise the
     run writes the set itself, from the configuration, through
     :func:`write_hrrr_route_inputs` and therefore through
     :func:`verify_round_trip` -- into ``into``, never beside the user's
@@ -1963,7 +2036,11 @@ def run_route_inputs(config_path, exp, *, raw, into=None):
     config_path = Path(config_path)
     beside = route_input_paths(config_path)
     if all(path.is_file() for path in beside.values()):
-        return beside
+        disagreeing = beside_root_disagreement(config_path, exp)
+        if report is not None:
+            report["disagreeing"] = disagreeing
+        if not disagreeing:
+            return beside
     missing = sorted(role for role, path in beside.items()
                      if not path.is_file())
 

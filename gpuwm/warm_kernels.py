@@ -527,10 +527,10 @@ def profile_workers(count: int) -> int:
         free, _total = cp.cuda.runtime.memGetInfo()
     except Exception:
         return 1
-    try:
-        cores = len(os.sched_getaffinity(0))
-    except (AttributeError, OSError):
-        cores = os.cpu_count() or 1
+    from gpuwm.ingest.preparation_workers import cpu_budget
+
+    # Affinity capped by the cgroup CPU quota (U-E5: nproc 256, quota 61.44).
+    cores = cpu_budget()["available_cpus"]
     workers = min(count, cores, max(1, int(free) // _WORKER_CARD_BYTES))
     cap = os.environ.get(WORKERS_ENVIRONMENT, "").strip()
     if cap.isdigit() and int(cap) > 0:

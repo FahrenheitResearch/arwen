@@ -1757,6 +1757,11 @@ def execute_experiment(
     original integer executor directly.
     """
     experiment = _bind_execution_physics_params(model, experiment)
+    # The host thread WAITS for the card (blocking sync) instead of
+    # spinning a core at 100 % for the whole step loop (gpuwm/cuda_wait.py).
+    # Host-side only: no kernel, order or value changes.
+    from gpuwm.cuda_wait import apply as _apply_cuda_wait
+    _apply_cuda_wait()
     # A [radar_heating] table is honored by the route that attached it or
     # refused here; a route that never attaches it would integrate an
     # unheated forecast under the name of a heated one.

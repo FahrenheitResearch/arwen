@@ -1487,6 +1487,17 @@ class PhysicsTendencies:
         return None if extra is None else extra.get(name)
 
 
+def _mynn_wrapper_mixes_scalars(cfg: RunConfig) -> bool:
+    """Whether the MYNN wrapper itself runs ``scalar_pblmix``'s diff4d.
+
+    It stages the mp=28 qn family (gpuwm.core.mynn_pbl_runtime
+    MYNN_MIXSCALARS_QN) and solves it in its column pieces; every other
+    microphysics' scalars go through the shared post-PBL arm
+    (PhysicsDriver._scalar_pblmix_rates) on the EXCH_H MYNN wrote.
+    """
+    return int(cfg.mp_physics) == 28
+
+
 def _couple_momentum_to_faces(state: DomainState, cfg: RunConfig,
                               mass_u: cp.ndarray, mass_v: cp.ndarray
                               ) -> tuple[cp.ndarray, cp.ndarray]:
@@ -4668,16 +4679,20 @@ class PhysicsDriver:
         One owner for every PBL scheme the registry row
         ``scalar_diffusion_exchange`` declares: the row names the producer's
         EXCH_H field, the declared no-ops (no PBL, SASE) and the one scheme
-        whose wrapper runs the solve itself (MYNN).  WRF's diff4d replaces
-        the scalar tendencies a scheme wrote for the same species (UW's ice
-        number), so its rates overwrite those keys.  Called by each scheme
-        arm after its own coupling and before ``materialize``.
+        whose wrapper runs the solve itself (MYNN, for the mp=28 family its
+        wrapper stages; any other microphysics' scalars are solved here on
+        MYNN's EXCH_H).  WRF's diff4d replaces the scalar tendencies a
+        scheme wrote for the same species (UW's ice number), so its rates
+        overwrite those keys.  Called by each scheme arm after its own
+        coupling and before ``materialize``.
         """
         from gpuwm.config import scalar_pblmix_exchange
         if cfg.scalar_pblmix != 1:
             return
         row = scalar_pblmix_exchange(cfg)
-        if row is None or not row["writes_exch_h"] or row["mixes_in_scheme"]:
+        if row is None or not row["writes_exch_h"]:
+            return
+        if row["mixes_in_scheme"] and _mynn_wrapper_mixes_scalars(cfg):
             return
         mixed = self._scalar_pblmix_rates(cfg, atmosphere, self.fields[row["field"]])
         extra = dict(getattr(self.pbl_tendencies, "extra_scalars", None) or {})
@@ -4691,13 +4706,15 @@ class PhysicsDriver:
 
         module_pbl_driver.F:2251-2259 (v4.6.1) runs the same local scalar
         diffusion after any PBL scheme, on that scheme's heat diffusivity;
-        under mp_physics = 28 it mixes QNC, QNI, QNWFA and QNIFA (diff4d
-        skips the precipitating number species), and
+        it mixes the scheme's scalar members less the ones diff4d skips
+        (:data:`gpuwm.config.SCALAR_PBLMIX_SPECIES`: QNC, QNI, QNWFA and
+        QNIFA under mp_physics = 28), and
         share/module_check_a_mundo.F:2477-2495 switches it on whenever the
         aerosol-aware scheme takes aerosol IC/BCs.  The solve is the one
         the MYNN arm already runs (gpuwm.core.mynn_scalar_mix), and the
         rates couple through calculate_phy_tend exactly as MYNN's do.
         """
+        from gpuwm.config import scalar_pblmix_species
         from gpuwm.core.mynn_scalar_mix_gpu import scalar_pblmix_columns_cuda
 
         nz, ny, nx = exch_h.shape
@@ -4710,12 +4727,12 @@ class PhysicsDriver:
                + self.state.c2h[:, None, None])
         piece = 32768
         extra: dict[str, cp.ndarray] = {}
-        for name in ("nc", "ni", "nwfa", "nifa"):
+        for name in scalar_pblmix_species(cfg):
             scalar = getattr(self.state, name, None)
             if scalar is None:
                 raise ValueError(
-                    f"scalar_pblmix=1 needs the mp=28 number "
-                    f"field {name}, which this state does not carry")
+                    f"scalar_pblmix=1 with mp_physics={cfg.mp_physics} needs "
+                    f"the scalar field {name}, which this state does not carry")
             source = scalar.reshape(nz, ncol)
             rate = cp.empty((nz, ny, nx), dtype=DTYPE)
             rate_flat = rate.reshape(nz, ncol)
@@ -4763,7 +4780,8 @@ class PhysicsDriver:
         # it by name, config.MYNN_QN_FLAG_SPECIES).  The validator pins
         # bldt=0 for the active case, so the attribute reads cannot miss.
         qn_scalars = None
-        mixing_qn = mynn_mixscalars_active(cfg) or cfg.scalar_pblmix == 1
+        mixing_qn = mynn_mixscalars_active(cfg) or (
+            cfg.scalar_pblmix == 1 and _mynn_wrapper_mixes_scalars(cfg))
         if mixing_qn:
             qn_scalars = {name: getattr(self.state, name)
                           for name in ("nc", "ni", "nwfa", "nifa")}
@@ -4775,7 +4793,10 @@ class PhysicsDriver:
             delt=self.bldt_seconds, itimestep=itimestep,
             mp_physics=cfg.mp_physics,
             qn_scalars=qn_scalars,
-            scalar_pblmix=cfg.scalar_pblmix,
+            # The wrapper solves diff4d only for the mp=28 family it stages;
+            # any other scheme's scalars take the post-PBL arm below.
+            scalar_pblmix=(cfg.scalar_pblmix
+                           if _mynn_wrapper_mixes_scalars(cfg) else 0),
             spp_pbl=cfg.spp_pbl,
             pattern_spp_pbl=(self.spp_patterns.get("pbl")
                              if cfg.spp_pbl else None),
@@ -4837,6 +4858,9 @@ class PhysicsDriver:
                     _specified_mass_mask(coupled)
                 extra[state_name] = coupled
             self.pbl_tendencies.extra_scalars = extra
+        # Any other microphysics' scalars: the shared post-PBL diff4d on the
+        # EXCH_H MYNN just wrote (a no-op for mp=28 and without the key).
+        self._couple_scalar_pblmix(cfg, atmosphere)
         pbl_components = (
             _composed_optional_tendency_components(cfg)
             if physics_reuses_pbl_composition(cfg)
@@ -5835,7 +5859,7 @@ class PhysicsDriver:
                           relaxation_time=cfg.oml_relaxation_time, dx=cfg.dx, dy=cfg.dy,
                           ocean_timestep_minutes=cfg.omdt)
         from gpuwm.ocean.seaice import reconcile_ocean
-        reconcile_ocean(self.fields, cfg)
+        reconcile_ocean(self.fields, cfg, dt=self.bldt_seconds)
 
     def bind_spp_patterns(self, patterns: Mapping[str, cp.ndarray]) -> None:
         """Borrow one member's patterns after its stochastic timestep update.

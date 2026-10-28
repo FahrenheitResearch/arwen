@@ -319,6 +319,8 @@ _STAMP_SOURCES = {
     # The ensemble reducer the AQ line bundled: same crate, same build.rs
     # stamp; its entry point black_boxes SOURCE_REV_STAMP in main.
     "rw_ensbatch": "crates/rw-wrfbatch/src/bin/ensbatch.rs",
+    # Fixed-ladder probability maps (WOOF severe ML); same crate, same build.rs stamp.
+    "rw_probgrid": "crates/rw-wrfbatch/src/bin/probgrid.rs",
     "rw_verify": "crates/rw-wrfbatch/src/bin/verify.rs",
     "rw_mpas_mesh": "crates/rw-mpas/src/bin/rw_mpas_mesh.rs",
     # One executable with several tools since 2.9.0; the stamp sits in the

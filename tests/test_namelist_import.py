@@ -1889,9 +1889,12 @@ def test_wrf3x_mynn_tkebudget_spelling_imports_the_gsd41_generation(tmp_path):
         assert domain.run.bl_mynn_mixlength == 2
     assert 'bl_mynn_version = "gsd_41"' in text
     assert 'ra_rrtmg_variant = "rrtmg_legacy"' in text
-    with pytest.raises(ValueError, match="in-cloud QC_BL"):
-        import_namelists(*_pair(tmp_path, inp=inp), name="mynn-gsd41-modern",
-                         rrtmg_variant="rte-rrtmgp")
+    # U-E4: every radiation coupling carries the gsd_41 QC_BL merge, so the
+    # RTE+RRTMGP arm imports too (it was refused before the merge was shared).
+    modern, _ = import_namelists(*_pair(tmp_path, inp=inp), name="mynn-gsd41-modern",
+                                 rrtmg_variant="rte-rrtmgp")
+    for domain in _load(tmp_path, modern, "mynn-gsd41-modern.toml").domains:
+        assert (domain.run.bl_mynn_version, domain.run.ra_rrtmg_variant) == ("gsd_41", "rte-rrtmgp")
     with pytest.raises(ValueError, match="bl_mynn_tkebudget"):
         import_namelists(*_pair(tmp_path, inp=inp.replace(
             "bl_mynn_tkebudget = 0,", "bl_mynn_tkebudget = 1,")),

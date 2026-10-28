@@ -2682,7 +2682,7 @@ class RunObserver:
         if hook is not None:
             hook(reason)
         if columns is not None:
-            self.arm_columns(columns.out)
+            self.arm_columns(columns.out, frames=columns.frames)
         if self._grib2_export is not None:
             self.stop_grib2(halt=True)
             self._grib2_export = None
@@ -2843,13 +2843,19 @@ class RunObserver:
             out, report=self._grib2_progress, warn=self.warn)
         self._grib2_progress({"event": "armed", "out": str(out), "attempt": self._grib2_attempt})
 
-    def arm_columns(self, out) -> None:
-        """Write the run's any-point column store (rw-store v2) for every output hour as frames land."""
+    def arm_columns(self, out, *, experiment=None, frames=None) -> None:
+        """Write the run's any-point column store (rw-store v2) for every output hour as frames land.
+
+        ``experiment`` (or ``frames`` itself) names which frames carry the 3-D state
+        (:class:`gpuwm.live_columns.StateFrames`); the others are not attempted."""
         if self._columns is not None:
             return
-        from gpuwm.live_columns import LiveColumns
+        from gpuwm.live_columns import LiveColumns, StateFrames
         try:
-            self._columns = LiveColumns(Path(out), report=self._columns_progress, warn=self.warn)
+            if frames is None and experiment is not None:
+                frames = StateFrames.for_experiment(experiment)
+            self._columns = LiveColumns(Path(out), report=self._columns_progress, warn=self.warn,
+                                        frames=frames)
         except Exception as error:  # noqa: BLE001 - a store that cannot start never stops the run
             self.warn("columns_not_armed", f"no column store for this run: {type(error).__name__}: {error}")
 
@@ -5170,12 +5176,31 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     # writes from the configuration into its own folder.  The same
     # function answered resolve_plan's question before anything was
     # fetched, so a configuration refused here was refused at the door.
+    route_report: dict[str, Any] = {}
     try:
         inputs = run_route_inputs(config_path, exp, raw=raw,
-                                  into=run_dir / "chain" / "route-inputs")
+                                  into=run_dir / "chain" / "route-inputs",
+                                  report=route_report)
     except HrrrRouteInputError as refusal:
         raise PlanError(str(refusal)) from None
     beside = route_input_paths(config_path)
+    disagreeing = route_report.get("disagreeing") or ()
+    if disagreeing:
+        # A set written before the configuration last changed: the root
+        # preparation reads the configuration, so the hierarchy would have
+        # refused this set after the fetch (WOOF canary run_0771cd8814b6e7f8,
+        # "[shared] gsd_diagnostics = 1" added after `gpuwm domain`).
+        observer.warn(
+            "route_inputs_rendered",
+            f"the namelists beside {config_path.name} were written before "
+            f"it last changed: their d01 holds {', '.join(disagreeing)} "
+            f"differently from {config_path.name}, which the root "
+            "preparation reads, so the run wrote the whole set from the "
+            f"configuration into {inputs['namelist_input'].parent}. Next: "
+            "to keep a set in step, re-save the configuration through the "
+            "door that wrote it",
+            disagreeing=list(disagreeing),
+            written=str(inputs["namelist_input"].parent))
     # A partial set is not read: a namelist.input edited by hand beside a
     # configuration whose other companions are missing does not run, and
     # the run says so rather than leaving the edit to look applied.  The
@@ -5183,7 +5208,7 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     unread = [path.name for role, path in beside.items()
               if role != "wps_namelist" and path.is_file()
               and inputs[role] != path]
-    if unread:
+    if unread and not disagreeing:
         missing = [path.name for path in beside.values() if not path.is_file()]
         observer.warn(
             "route_inputs_rendered",
@@ -8092,7 +8117,7 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
             observer.arm_grib2(run_dir / "grib2")
         from gpuwm.live_columns import columns_enabled
         if columns_enabled(plan.run_options):
-            observer.arm_columns(run_dir / "columns")
+            observer.arm_columns(run_dir / "columns", experiment=exp)
         heartbeat.starting()
 
         if fetch_arguments is not None:

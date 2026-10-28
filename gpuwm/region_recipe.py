@@ -162,6 +162,28 @@ def emit_recipe(*, recipe, region, spacing_km, source, cycle, hours,
         hrrr_source_window(cycle=cycle_time, start_hour=start_hour,
                            run_seconds=float(hours) * 3600.0)
     start = cycle_time + timedelta(hours=start_hour)
+    # A model-level source's native top moves with its upgrades (HRRR: 20 hPa
+    # through v3, 15 hPa from v4), so a recipe written for one era can ask a
+    # cycle from another for levels its files do not hold.  The emitted top
+    # is the higher of the recipe's and the cycle era's (a table row on the
+    # source, gpuwm.source_adapters.source_top_pa_for_cycle), decided here
+    # before any download, and the receipt and output say so.  Breakage:
+    # hrrr_v4_gsd41 (p_top 1500 Pa) on a pre-v4 HRRR cycle fetched 26 GB and
+    # then refused at root_initialize ("target pressure lies above source
+    # top"); the same day prepares at 2000 Pa.
+    from gpuwm.source_adapters import source_top_pa_for_cycle
+    recipe_top = document["shared"].get("p_top")
+    recipe_top = None if recipe_top is None else float(recipe_top)
+    era_top = source_top_pa_for_cycle(source, cycle_time)
+    model_top = {"recipe_p_top_pa": recipe_top, "source_era_top_pa": era_top,
+                 "emitted_p_top_pa": recipe_top, "raised": False}
+    if era_top is not None and recipe_top is not None and recipe_top < era_top:
+        document["shared"]["p_top"] = era_top
+        model_top.update(emitted_p_top_pa=era_top, raised=True, reason=(
+            f"{source} cycle {cycle_time:%Y-%m-%dT%H} reaches only "
+            f"{era_top:g} Pa ({era_top / 100:g} hPa); the recipe's "
+            f"{recipe_top:g} Pa top would be extrapolated past the analysis, "
+            f"so p_top is {era_top:g} Pa"))
     # A recipe's [static] source binds published native-grid fields to the
     # recipe's OWN grid (hrrr_v4_gsd41: the HRRR CONUS v4 statics).  This door
     # lays out a new grid on a new projection, where that source refuses
@@ -215,6 +237,7 @@ def emit_recipe(*, recipe, region, spacing_km, source, cycle, hours,
         "region": str(region), "shape": [nx, ny, document["shared"].get("nz")],
         "spacing_km": spacing_km, "projection": projected, "forcing_source": source,
         "forecast_start_hour": start_hour,
+        "model_top": model_top,
         "aerosol_candidate": selected, "aerosol_rejected": rejected,
         "aerosol_actual_use": "recorded by the preparation and forecast aerosol_initialization receipt",
         "native_static_set_aside": native_static,
@@ -263,6 +286,8 @@ def domain_recipe_main(args):
         receipt["defaults_from_recipe_row"] = row_defaults
         print(f"--recipe {args.recipe}: no --region/--spacing-km given; using the recipe row's "
               f"declared region {row_defaults['region']} at {row_defaults['spacing_km']:g} km")
+    if receipt["model_top"].get("raised"):
+        print(f"--recipe {args.recipe}: model top raised: {receipt['model_top']['reason']}")
     wizard._write_atomic(args.out, text)
     receipt_path = args.out.with_suffix(".recipe.json")
     wizard._write_atomic(receipt_path, json.dumps(receipt, indent=2) + "\n")

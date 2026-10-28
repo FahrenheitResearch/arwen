@@ -12,7 +12,6 @@ import concurrent.futures
 import hashlib
 import lzma
 import multiprocessing
-import os
 import time
 
 from gpuwm.kernel_aot import (ARCHITECTURES, Pack, compiler_identity, local_options,
@@ -118,10 +117,10 @@ def build(output, recipes, *, architectures=ARCHITECTURES, workers=None, base_pa
                 if selected.image(existing) is None:
                     raise ValueError("base pack image failed its digest")
                 reused += 1
-    try:
-        cores = len(os.sched_getaffinity(0))
-    except (AttributeError, OSError):
-        cores = os.cpu_count() or 1
+    from gpuwm.ingest.preparation_workers import cpu_budget
+
+    # Affinity capped by the cgroup CPU quota (U-E5: nproc 256, quota 61.44).
+    cores = cpu_budget()["available_cpus"]
     count = min(len(jobs), workers or max(1, cores))
     if workers is not None and workers < 1:
         raise ValueError("workers must be positive")

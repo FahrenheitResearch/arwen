@@ -103,7 +103,10 @@ ROUTE_TABLE_SHA256 = (
     # Moved by the ecmwf-open-data-0p1 route (IFS HRES open data at 0.1
     # degree, published from the 2026-10-20 cycles).
     # Both, merged for 2.9.7.
-    "c695f3f32156a4e64a8e7d5d8872465dcb395381cfbe74781449a34b4f84d154"
+    # Moved by fix/U-E8: hrrr-native's soil donor counts its leads from the
+    # request's start (lead_origin window_start), so a time-lagged member
+    # takes its own run's soil at the start.
+    "1cb2e6c29d8aa9741dcaabd6fff85fd0b7b17155954d55012eec025f8bca8213"
 )
 
 #: Sources whose acquisition predates the route table and keeps its own
@@ -209,6 +212,16 @@ class ComposeRow:
     why: str
 
 
+DONOR_LEAD_ORIGINS = ("cycle", "window_start")
+
+
+def _donor_lead_origin(row) -> str:
+    origin = str(row.get("lead_origin", "cycle"))
+    if origin not in DONOR_LEAD_ORIGINS:
+        raise ValueError(f"donor lead_origin {origin!r} is not one of {DONOR_LEAD_ORIGINS}")
+    return origin
+
+
 @dataclass(frozen=True)
 class DonorRow:
     source: str
@@ -216,6 +229,11 @@ class DonorRow:
     leads: tuple[int, ...]
     cycle: str
     why: str
+    #: What ``leads`` count from: ``cycle`` (the donor's own leads, the
+    #: same for every request) or ``window_start`` (offsets from the
+    #: request's first lead, so a time-lagged request that starts at f03
+    #: takes the donor's f03 record, valid when the forecast starts).
+    lead_origin: str = "cycle"
 
 
 @dataclass(frozen=True)
@@ -740,7 +758,8 @@ def _build_routes() -> Mapping[str, Route]:
                 DonorRow(source=str(row["source"]), role=str(row["role"]),
                          leads=tuple(int(lead) for lead in row["leads"]),
                          cycle=str(row.get("cycle", "same")),
-                         why=str(row.get("why", "")))
+                         why=str(row.get("why", "")),
+                         lead_origin=_donor_lead_origin(row))
                 for row in raw.get("donors", [])),
             record_subset_supported=bool(
                 raw["record_subset"].get("supported", False)),
@@ -1948,7 +1967,9 @@ def resolve_request(source: str, *, cycle: datetime, hours: int,
 
     donors = tuple(
         DonorRequest(source=row.source, role=row.role, cycle=cycle,
-                     leads=row.leads, why=row.why)
+                     leads=(row.leads if row.lead_origin == "cycle"
+                            else tuple(leads[0] + lead for lead in row.leads)),
+                     why=row.why)
         for row in route.donors)
 
     if compose:

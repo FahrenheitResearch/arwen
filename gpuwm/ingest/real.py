@@ -123,8 +123,15 @@ def _column_pool(max_workers: int):
     """Threads for one setup column helper; their freed memory is returned
     to the operating system when the pool closes (once per block instead,
     in a column-blocked initialization)."""
+    # The process's reused host threads (gpuwm.ingest.host_parallel), not a
+    # pool started and joined per helper call: a GFS preparation made ~25
+    # helper calls per forcing time, each starting a thread per chunk, and
+    # on a loaded host the thread starts alone cost ~10 % of its main
+    # thread (measured 2026-10-27).  Same tasks, same chunks, same results;
+    # leaving the block still waits for every task it submitted.
+    from gpuwm.ingest.host_parallel import shared_executor
     try:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with shared_executor(max_workers) as executor:
             binding = pm.current_cpu_bridge_binding()
             if binding is None:
                 yield executor
@@ -1600,6 +1607,22 @@ class _ReceiptHasher:
 _NO_CARD_STATUSES = frozenset({100, 35})
 
 
+def _thread_holds_cuda_context(cupy) -> bool:
+    """Whether the calling thread already has a CUDA context current.
+
+    ``cuCtxGetCurrent`` reads the thread's context without creating one, so
+    asking never touches the card.  A driver that cannot answer (not
+    initialised, absent) means there is no context here.
+    """
+    driver = getattr(cupy.cuda, "driver", None)
+    if driver is None:
+        return False
+    try:
+        return bool(driver.ctxGetCurrent())
+    except driver.CUDADriverError:
+        return False
+
+
 def _start_receipt_job(function, *args, **kwargs):
     """Run one receipt builder on its own thread, on this thread's card.
 
@@ -1624,6 +1647,15 @@ def _start_receipt_job(function, *args, **kwargs):
             # a host without one): the receipt runs on the host, as the
             # whole preparation does there.  Asking unconditionally refused
             # every CPU-backend start with cudaErrorNoDevice.
+            device = None
+        if device is not None and not _thread_holds_cuda_context(cupy):
+            # cudaGetDevice answers 0 on any box with a visible card, context
+            # or not, so it cannot tell a CUDA-backend caller from a CPU one.
+            # Binding that answer on the job thread (Device.use, i.e.
+            # cudaSetDevice) is what stood a ~386 MiB primary context up on
+            # the card in every CPU-backend HRRR start (U-E7: CPU prep held a
+            # context on each card unless CUDA_VISIBLE_DEVICES was emptied).
+            # A caller with no current context has no card to hand on.
             device = None
     binding = pm.current_cpu_bridge_binding()
     job = Future()

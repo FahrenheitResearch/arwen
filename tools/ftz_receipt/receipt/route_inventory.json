@@ -9,9 +9,9 @@
     "cupy.ReductionKernel",
     "cupy.cuda.compiler.compile_using_nvrtc"
   ],
-  "site_count": 353,
+  "site_count": 354,
   "site_count_by_kind": {
-    "cupy.ElementwiseKernel": 29,
+    "cupy.ElementwiseKernel": 30,
     "cupy.RawKernel": 43,
     "cupy.RawModule": 196,
     "cupy.ReductionKernel": 11,
@@ -22,7 +22,7 @@
       "cupy.RawKernel": 2
     },
     "package": {
-      "cupy.ElementwiseKernel": 19,
+      "cupy.ElementwiseKernel": 20,
       "cupy.RawKernel": 6,
       "cupy.RawModule": 60,
       "cupy.ReductionKernel": 7,
@@ -930,7 +930,7 @@
     },
     {
       "file": "gpuwm/core/physics.py",
-      "line": 1812,
+      "line": 1823,
       "column": 17,
       "surface": "package",
       "constructor": "cp.ElementwiseKernel",
@@ -946,7 +946,7 @@
     },
     {
       "file": "gpuwm/core/physics.py",
-      "line": 1827,
+      "line": 1838,
       "column": 17,
       "surface": "package",
       "constructor": "cp.ElementwiseKernel",
@@ -962,7 +962,7 @@
     },
     {
       "file": "gpuwm/core/physics.py",
-      "line": 1850,
+      "line": 1861,
       "column": 21,
       "surface": "package",
       "constructor": "cp.ElementwiseKernel",
@@ -1379,6 +1379,22 @@
       "options_element_expressions": null,
       "options_are_literal": false,
       "text": "_DIAGNOSTICS = cp.ElementwiseKernel("
+    },
+    {
+      "file": "gpuwm/core/surface_ocean.py",
+      "line": 74,
+      "column": 21,
+      "surface": "package",
+      "constructor": "cp.ElementwiseKernel",
+      "constructor_kind": "cupy.ElementwiseKernel",
+      "enclosing": "_ice_owned",
+      "takes_caller_options": true,
+      "options_argument_present": false,
+      "options_expression": null,
+      "options": null,
+      "options_element_expressions": null,
+      "options_are_literal": false,
+      "text": "_ICE_OWNED = cp.ElementwiseKernel("
     },
     {
       "file": "gpuwm/core/tempo_runtime.py",
@@ -3194,7 +3210,7 @@
     },
     {
       "file": "tests/test_member_leg_cost.py",
-      "line": 318,
+      "line": 356,
       "column": 11,
       "surface": "tests",
       "constructor": "nvrtc_ptx_cache.compile_using_nvrtc",

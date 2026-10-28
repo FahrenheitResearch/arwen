@@ -575,10 +575,16 @@ def _warm_images():
 
 
 def _workers() -> int:
-    try:
-        cores = len(os.sched_getaffinity(0))
-    except (AttributeError, OSError):
-        cores = os.cpu_count() or 1
+    """Compiler threads and processes: CPU affinity capped by the cgroup CPU quota.
+
+    U-E5 (2026-10-26): affinity alone sized this pool, so a container with
+    nproc 256 and a 61.44-core CFS quota (a rented box) opened 256 compiler
+    threads and 256 spawn compiler processes for a cold kernel cache, and
+    the first native parent step of a WOOF Regional case took 426.9 s.
+    """
+    from gpuwm.ingest.preparation_workers import cpu_budget
+
+    cores = cpu_budget()["available_cpus"]
     limit = os.environ.get(WORKERS_ENVIRONMENT, "").strip()
     if limit.isdigit() and int(limit) > 0:
         cores = min(cores, int(limit))

@@ -316,3 +316,40 @@ def test_preparation_profile_uses_noise_batch_donor_variant(tmp_path):
     batch.write_text(json.dumps(bad))
     with pytest.raises(ValueError, match='donor/profile pair'):
         earth2_run.preparation_profile(args, get_source_adapter('earth2-fcn3'))
+
+
+def test_physical_unit_noise_is_scaled_to_each_channel():
+    # Breakage it prevents: SphericalGaussian(0.001) in physical units put +-0.001 kg/kg on
+    # SFNO's q50 (878x its normalisation std) and its one member forecast 10-18 m/s winds
+    # from a 2.7 m/s calm by +6 h (WOOF run_e6a68e7fcc4ed58f).
+    torch = pytest.importorskip("torch")
+
+    class UnitNoise:
+        noise_amplitude = torch.tensor([0.001])
+
+        def __call__(self, x, coords):
+            return x + self.noise_amplitude * torch.ones_like(x), coords
+
+    operation = UnitNoise()
+    scaled = runner.scaled_noise(operation, "channel_spatial_std")
+    x = torch.zeros(1, 1, 1, 2, 4, 8)
+    x[..., 0, :, :] = torch.linspace(0, 1e-6, 32).reshape(4, 8)   # a q50-sized channel
+    x[..., 1, :, :] = torch.linspace(5e4, 6e4, 32).reshape(4, 8)  # a z500-sized channel
+    x[..., 1, 0, 0] = float("nan")                                  # missing points stay local
+    y, _ = scaled(x.clone(), {})
+    added = (y - x)[..., :, 1, 1].reshape(2)
+    expected = [0.001 * float(x[0, 0, 0, 0].std(unbiased=False)),
+                0.001 * float(x[0, 0, 0, 1].flatten()[1:].std(unbiased=False))]
+    assert added.tolist() == pytest.approx(expected, rel=1e-3)
+    assert torch.equal(operation.noise_amplitude, torch.tensor([0.001]))
+    assert runner.scaled_noise(operation, None) is operation
+    with pytest.raises(ValueError, match="amplitude_scale"):
+        runner.scaled_noise(operation, "kelvin")
+
+
+def test_every_physical_unit_perturbation_row_declares_its_scale():
+    from gpuwm import earth2_run
+    for name, row in earth2_run.model_table()["models"].items():
+        perturbation = row.get("members", {}).get("perturbation", {})
+        if perturbation.get("class") == "SphericalGaussian":
+            assert perturbation.get("amplitude_scale") == "channel_spatial_std", name

@@ -75,6 +75,7 @@ from gpuwm.ingest.preprocess_backend import (
     release_backend_memory,
 )
 from gpuwm.ingest.real import initialize_real, surface_fields_to_device
+from gpuwm.ingest.land_state import land_state_context
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.moisture_floor_receipt import (
     MOISTURE_FLOOR_BY_DOMAIN_KEY, moisture_floor_block,
@@ -1473,6 +1474,10 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         # arrived on.
         soil_mesh=soil_mesh_plan_from_case(
             initial_source, grid, enabled=bool(soil_texture_downscale)),
+        # Where and when, for a same-model soil donor (gpuwm/ingest/
+        # land_state.py: HRRR's RUC soil for a RUC run over CONUS).
+        land_state=land_state_context(
+            grid, getattr(initial_met, "valid_time", times[0])),
         route=_WATER_ROUTE)
     if store_request is not None:
         from types import SimpleNamespace

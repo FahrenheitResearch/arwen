@@ -54,7 +54,6 @@ from datetime import datetime, timedelta
 import os
 from pathlib import Path
 import sys
-import time
 from typing import Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -297,7 +296,6 @@ def decide_lake_ice(observation: ObservedLakeIce, lat, lon, lake_mask, *,
     lat = np.asarray(lat, dtype=np.float64)
     lon = np.asarray(lon, dtype=np.float64)
     radius = window_radius(dx_m, observation.source.pixel_m)
-    started = time.perf_counter()
     counts, centre, read = sample_ims_codes(
         observation.path, lat[lake], lon[lake], radius=radius)
     frozen_cells, observed_cells = classify_frozen(counts, centre)
@@ -312,7 +310,14 @@ def decide_lake_ice(observation: ObservedLakeIce, lat, lon, lake_mask, *,
         "frozen_by_ice_pixels": int((frozen_cells & ((counts[:, 1] + counts[:, 3]) > 0)).sum()),
         "frozen_by_snow_cover": int((frozen_cells & ((counts[:, 1] + counts[:, 3]) == 0)).sum()),
         "reader": read,
-        "seconds": round(time.perf_counter() - started, 3),
+        # No wall time here.  This receipt is bound into the prepared
+        # cache's source identity (gfs_direct, nest_init), and a wall time
+        # made that identity differ on every preparation of the same
+        # inputs.  THE BREAKAGE (run_515470d250a1060a, 2026-10-26): a
+        # checkpoint resume's forcing continuation re-prepares the head and
+        # requires the identical cache, so it always refused with
+        # "continuation changes its immutable prepared head cache"
+        # (0.082 vs 0.08 s here and nothing else).
     }
     return LakeIceDecision(frozen=frozen, receipt=receipt)
 

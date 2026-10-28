@@ -420,6 +420,12 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "GPUWM_ENSEMBLE_RENDERER",
         "ensemble diagnostic reduction and aggregate product rendering"),
     BundledArtifact(
+        "rw_probgrid", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_PROBGRID", "post-processed probability maps on a fixed ladder (WOOF severe ML)",
+        # 2.9.9 (PyPI per-file limit): no forecast reaches it, and carried in the
+        # wheel it took the Linux platform wheel past 100,000,000 bytes.
+        on_demand=True),
+    BundledArtifact(
         "rw_compare", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_COMPARE", "native reference panels and observation overlays"),
     BundledArtifact(

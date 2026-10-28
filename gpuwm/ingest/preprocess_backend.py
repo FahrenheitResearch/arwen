@@ -29,6 +29,8 @@ import inspect
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 from threading import RLock
 from types import MappingProxyType
 
@@ -450,11 +452,38 @@ def _era5_rh_to_water_cpu(relative_humidity, temperature):
     t = np.asarray(_host(temperature), dtype=np.float64)
     if rh.shape != t.shape:
         raise ValueError("relative_humidity and temperature shapes differ")
+    # Elementwise, so it runs as contiguous flat slabs on host threads
+    # (gpuwm.ingest.host_parallel): every element takes exactly the
+    # arithmetic it took in one pass, so the result is byte-identical.
+    # One pass of this was ~12 % of a CPU GFS preparation's main thread.
+    from gpuwm.ingest.host_parallel import host_threads, map_ordered
+
+    threads = (host_threads(rh.size // _RH_SLAB_MIN_VALUES)
+               if rh.size >= 2 * _RH_SLAB_MIN_VALUES else 1)
+    if threads == 1:
+        return _rh_to_water_block(rh, t, workers=None)
+    rh_flat = np.ascontiguousarray(rh).reshape(-1)
+    t_flat = np.ascontiguousarray(t).reshape(-1)
+    edges = np.linspace(0, rh_flat.size, threads + 1).astype(np.int64)
+    slabs = [(int(a), int(b)) for a, b in zip(edges[:-1], edges[1:]) if b > a]
+    parts = map_ordered(
+        lambda slab: _rh_to_water_block(
+            rh_flat[slab[0]:slab[1]], t_flat[slab[0]:slab[1]], workers=1),
+        slabs, workers=threads)
+    return np.concatenate(parts).reshape(rh.shape)
+
+
+#: Smallest flat slab the RH conversion hands one host thread.
+_RH_SLAB_MIN_VALUES = 1 << 18
+
+
+def _rh_to_water_block(rh, t, *, workers):
     from gpuwm.core import portable_math as pm
 
-    eis = 0.01 * pm.exp(9.550426 - 5723.265 / t + 3.53068 * pm.log(t)
-                        - 0.00728332 * t)
-    ews = 6.112 * pm.exp(17.67 * (t - 273.15) / ((t - 273.15) + 243.5))
+    eis = 0.01 * pm.exp(9.550426 - 5723.265 / t + 3.53068 * pm.log(t, workers=workers)
+                        - 0.00728332 * t, workers=workers)
+    ews = 6.112 * pm.exp(17.67 * (t - 273.15) / ((t - 273.15) + 243.5),
+                         workers=workers)
     frac = (273.15 - t) / 20.0
     blended = frac * eis + (1.0 - frac) * ews
     r = np.where(t > 253.15, blended, eis)
@@ -1208,12 +1237,14 @@ def _resolve_preprocess_backend(backend="cuda", *, workers=None,
                 "cpu_bridge applies only to the CPU backend; under the CUDA "
                 "backend the host steps use the library the resolution "
                 "ladder picks (set GPUWM_CPU_PREPROCESS_BRIDGE to choose it)")
+        _mask_to_the_least_busy_card()
         if not _gpu_runtime_installed():
             # An EXPLICIT cuda request on a CPU-only install: a named
             # refusal with the remedy, at the front of the work.  The
             # bare default reaches the CPU backend through "auto" and
             # never lands here.
             raise ValueError(_GPU_PREPROCESS_REMEDY)
+        _wait_for_the_card_blocking()
         return _selection(
             "cuda", _with_host_workers(CudaPreprocessBackend(), workers),
             named)
@@ -1242,6 +1273,7 @@ def _resolve_preprocess_backend(backend="cuda", *, workers=None,
                         "preprocessing")
         else:
             try:
+                _mask_to_the_least_busy_card()
                 candidate = _with_host_workers(
                     CudaPreprocessBackend(), workers)
                 cp = candidate.array_module
@@ -1252,6 +1284,7 @@ def _resolve_preprocess_backend(backend="cuda", *, workers=None,
                     if certified:
                         busy_reason, device_load = _auto_device_load(cp)
                         if busy_reason is None:
+                            _wait_for_the_card_blocking()
                             return _selection("auto", candidate, sentence,
                                               device_load=device_load)
                         fallback = busy_reason
@@ -1283,6 +1316,84 @@ def _resolve_preprocess_backend(backend="cuda", *, workers=None,
             "auto", ParallelCpuPreprocessBackend(workers=workers), fallback,
             device_load=device_load)
     raise ValueError("backend must be 'cuda', 'cpu', or 'auto'")
+
+
+def _cuda_not_yet_initialized() -> bool:
+    """True when this process has not called ``cuInit`` (asked without calling it)."""
+
+    import ctypes
+
+    name = "nvcuda.dll" if sys.platform == "win32" else "libcuda.so.1"
+    try:
+        driver = ctypes.CDLL(name)
+    except OSError:
+        return False
+    count = ctypes.c_int()
+    # CUDA_ERROR_NOT_INITIALIZED (3): the driver answers without starting.
+    return driver.cuDeviceGetCount(ctypes.byref(count)) == 3
+
+
+def _mask_to_the_least_busy_card(environ=None) -> str | None:
+    """On a multi-card host with no mask, prepare on the least-busy card, not card 0.
+
+    THE BREAKAGE: a preparation with no ``CUDA_VISIBLE_DEVICES`` on a shared
+    multi-card box took CUDA's device 0 whatever ran there (ml-probs T1 on
+    V8X, 2026-10-27: every ``gfs_direct`` preparation held a context on card
+    0, another lane's card, while cards 4-7 were the lane's).  The forecast
+    already refuses an ambiguous card (``supervisor.select_gpu``); a
+    preparation is short and needs no lock, so it takes the visible card
+    with the most free memory among those under the busy threshold and
+    names it.  Applied only before this process starts CUDA, only when no
+    mask is set and more than one card is listed; with none under the
+    threshold nothing is masked and ``auto`` reads the busy card as before.
+    Returns the chosen UUID or None.
+    """
+
+    environ = os.environ if environ is None else environ
+    if environ.get("CUDA_VISIBLE_DEVICES") is not None:
+        return None
+    try:
+        completed = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,uuid,memory.free,utilization.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    cards = []
+    for line in completed.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) != 4 or not parts[1].startswith("GPU-"):
+            continue
+        try:
+            cards.append((int(parts[0]), parts[1], int(parts[2]), int(parts[3])))
+        except ValueError:
+            continue
+    if completed.returncode != 0 or len(cards) < 2:
+        return None
+    idle = [card for card in cards if card[3] < AUTO_BUSY_UTILIZATION_PERCENT]
+    if not idle or not _cuda_not_yet_initialized():
+        return None
+    index, uuid, free_mib, utilization = max(idle, key=lambda card: (card[2], -card[0]))
+    environ["CUDA_VISIBLE_DEVICES"] = uuid
+    print(f"preprocess: {len(cards)} cards visible and no CUDA_VISIBLE_DEVICES; "
+          f"preparing on card {index} ({uuid}, {free_mib} MiB free, "
+          f"{utilization}% busy): the most free memory of the cards under "
+          f"{AUTO_BUSY_UTILIZATION_PERCENT}% busy (set CUDA_VISIBLE_DEVICES "
+          "to choose)",
+          file=sys.stderr, flush=True)
+    return uuid
+
+
+def _wait_for_the_card_blocking() -> None:
+    """A CUDA preparation's host thread sleeps on the card, never spins.
+
+    Set once the CUDA backend is chosen and before its first allocation, so
+    the primary context is created with blocking sync
+    (:mod:`gpuwm.cuda_wait`); host-side only, no kernel or value changes.
+    """
+    from gpuwm.cuda_wait import apply
+
+    apply()
 
 
 class PreparationDeviceRefused(InitializationMemoryRefused):

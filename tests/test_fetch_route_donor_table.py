@@ -103,3 +103,28 @@ def test_the_donor_route_takes_the_primary_transport_pin(tmp_path, monkeypatch):
     seen.clear()
     fetch._donor_route_plan(plan.donors[0], _args(tmp_path))
     assert seen == [("hrrr-prs", None)]
+
+
+def test_a_time_lagged_hrrr_request_takes_its_soil_donor_at_its_own_start(tmp_path, monkeypatch):
+    """The soil donor counts its leads from the request's start.
+
+    Breakage it prevents: a time-lagged DA member (HRRR 07Z run started
+    at f03 for a 10Z start) took its soil column from the 07Z analysis
+    (wrfprsf00), three hours stale, and at seventeen hours' lag an
+    afternoon top-node soil temperature started a morning forecast.
+    A forecast from its own cycle still takes the analysis (f00).
+    """
+    cycle = datetime(2023, 7, 10, 7)
+    lagged = fetch_routes.resolve_request("hrrr-native", cycle=cycle, hours=1, start_hour=3)
+    assert tuple(lagged.leads)[0] == 3
+    assert [(d.source, tuple(d.leads)) for d in lagged.donors] == [("hrrr-prs", (3,))]
+    own = fetch_routes.resolve_request("hrrr-native", cycle=cycle, hours=1)
+    assert [(d.source, tuple(d.leads)) for d in own.donors] == [("hrrr-prs", (0,))]
+    monkeypatch.setattr(fetch_routes, "run_plan", lambda donor_plan, **kw: {})
+    files = fetch._fetch_route_donors(lagged, _args(tmp_path))
+    assert "wrfprsf03" in files["soil_surface_data"].name
+
+
+def test_an_unknown_donor_lead_origin_is_a_table_error():
+    with pytest.raises(ValueError, match="lead_origin"):
+        fetch_routes._donor_lead_origin({"lead_origin": "valid_time"})

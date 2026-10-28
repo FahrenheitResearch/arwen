@@ -2805,20 +2805,28 @@ fn hash_projected_grid(grid: &ProjectedGrid) -> u64 {
     hasher.finish()
 }
 
+/// Where `level` crosses the edge from `a` to `b`, if it does.
+///
+/// Each corner is classified once, at-or-above the level or below it, and
+/// an edge is crossed only when its two corners fall on different sides.
+/// A corner lying exactly ON the level used to count as a crossing on BOTH
+/// of its edges: the cell then had three intersection points (or two copies
+/// of the same corner), the walk drew only the first pair, and the real
+/// segment from that corner to the opposite edge was never drawn.  A small
+/// closed isobar in a nearly flat field showed a one-cell gap with nothing
+/// in it (2.9.9 R10 look, U-E9: the R11 d01 MSLP/10 m winds map, north-east
+/// corner).  With the classification a cell always has 0, 2 or 4 crossings;
+/// values off the level take exactly the arithmetic they always did.
 fn interp_point(a: (f64, f64, f64), b: (f64, f64, f64), level: f64) -> Option<(f64, f64)> {
     let (x0, y0, v0) = a;
     let (x1, y1, v1) = b;
     if !v0.is_finite() || !v1.is_finite() {
         return None;
     }
-    let d0 = v0 - level;
-    let d1 = v1 - level;
-    if (d0 > 0.0 && d1 > 0.0) || (d0 < 0.0 && d1 < 0.0) {
+    if (v0 >= level) == (v1 >= level) {
         return None;
     }
-    if (v1 - v0).abs() < 1e-12 {
-        return Some(((x0 + x1) * 0.5, (y0 + y1) * 0.5));
-    }
+    // Opposite sides, so v1 != v0 and t lies in [0, 1].
     let t = (level - v0) / (v1 - v0);
     Some((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
 }

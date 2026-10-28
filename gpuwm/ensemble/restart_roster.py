@@ -214,10 +214,16 @@ def _place(source, destination, *, link):
 
 
 def _source_revision(path):
-    """A copy may be reused only while its live source has not changed."""
+    """A copy may be reused only while its live source has not changed.
+
+    Device, inode, size and mtime name a content change. ctime is left out:
+    a reader that hard-links a member's restart files changes their ctime
+    without changing a byte, and counting it made every seal repeat its
+    copy and then fail the member ("ensemble snapshot source changed during
+    copy", WoFS run_8dd42875d520e1d3, 2026-10-26).
+    """
     status = path.stat()
-    return [status.st_dev, status.st_ino, status.st_size,
-            status.st_mtime_ns, status.st_ctime_ns]
+    return [status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns]
 
 
 #: The collector's private trees. The sealed snapshot names every file the
@@ -446,16 +452,25 @@ def _seal_once(root, output, *, collector_files, collector):
                 retained = (resolve_file(root, old["snapshot"])
                             if old.get("source_revision") == revision and "snapshot" in old else None)
                 if retained is not None and retained.is_file():
-                    # Link only between sealed copies. Linking the live output
+                    # Link between sealed copies. Linking a live OUTPUT
                     # changes its ctime while another member's writer hashes
                     # it (four-member concurrent WoFS run, 2026-10-17).
                     copy = _place(retained, generation / name, link=True)
                     digest = digest_file(copy)
                     if digest != old["sha256"]:
                         raise ValueError(f"ensemble sealed copy changed: {name}")
+                elif path in hashed:
+                    # A member checkpoint set is write-once (published by
+                    # os.replace, retired by unlink, never rewritten in
+                    # place) and was just hashed against its committed owner
+                    # binding, so the seal links it instead of copying it.
+                    # The copy cost 44-59 GB of host disk per sealed set
+                    # (U-E10). No checkpoint reader counts ctime (E9).
+                    copy = _place(path, generation / name, link=True)
+                    digest = hashed[path]
                 else:
                     copy = _place(path, generation / name, link=False)
-                    digest = hashed[path] if path in hashed else digest_file(copy)
+                    digest = digest_file(copy)
                 if _source_revision(path) != revision:
                     raise FileNotFoundError(f"ensemble snapshot source changed during copy: {name}")
                 return {"path": name, "bytes": copy.stat().st_size,

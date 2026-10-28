@@ -699,7 +699,8 @@
             0
           ],
           "cycle": "same",
-          "why": "The native product omits the nine-node soil temperatures and seven soil-water levels. The same-cycle pressure product supplies the complete analysis soil column through the packaged field-source composition."
+          "lead_origin": "window_start",
+          "why": "The native product omits the nine-node soil temperatures and seven soil-water levels. The same-cycle pressure product supplies the complete soil column through the packaged field-source composition, at the lead the request starts from: the analysis for a forecast from its cycle, the run's own state at f03 for a time-lagged member started three hours in."
         }
       ]
     },

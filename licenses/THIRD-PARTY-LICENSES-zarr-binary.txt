@@ -6401,7 +6401,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------------
-[ZARR-089] sha256 a66883985cb83be0328341dcf900ac8dc115ec9661cde4affc87c9a5464888c8
+[ZARR-089] sha256 3bdf8d072c543c5aa75a1299acb3b218fbbf1775c0c346aaaf4414534f5f6820
 As carried by:
   licenses/THIRD-PARTY-LICENSES-bridge-binaries.txt
 ------------------------------------------------------------------------------
@@ -6409,7 +6409,7 @@ THIRD-PARTY LICENCES FOR THE ARWEN BRIDGE BUNDLE
 ==============================================================================
 
 This file is the binary-form notice for the compiled artefacts distributed
-in this bundle and staged into ArWen platform wheels: 74 Rust executables and
+in this bundle and staged into ArWen platform wheels: 75 Rust executables and
 libraries, plus the map assets beside it and two embedded fonts.
 
 Those binaries are built from two kinds of source, and both carry third-party
@@ -23949,8 +23949,8 @@ All LICENSE, LICENCE, COPYING, COPYRIGHT and NOTICE files at each
 resolved vendored package root are reproduced, deduplicated by raw SHA-256.
 The TUI itself uses the repository Apache-2.0 licence.
 
-tools/arwen-tui/Cargo.toml sha256 e5919d8343b57be3e97e12a53e762a0ce8efd081b440311cb5be6283e9de4ffa
-tools/arwen-tui/Cargo.lock sha256 ca4ee7359cca7cceebf561d321e3708478911ea02bdf37fad96a9d3b3d4d92f5
+tools/arwen-tui/Cargo.toml sha256 4f1205159387a58794ac7523ba19811ffc494008813845261c5f0cca28687c62
+tools/arwen-tui/Cargo.lock sha256 abfcb2958799c7b89e09a271aff47f5f6b24c91c086480154a258ef725bb0b01
 x86_64-unknown-linux-gnu: 70 external packages
 x86_64-pc-windows-msvc: 67 external packages
 

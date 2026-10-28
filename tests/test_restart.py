@@ -4880,10 +4880,11 @@ def test_failed_write_leaves_no_residue(monkeypatch, tmp_path):
     state = _shim_state(cfg, monkeypatch)
     _fill_setup(state)
 
-    def explode(*args, **kwargs):
+    def explode(path, *args, **kwargs):
+        Path(path).write_bytes(b"PK\x03\x04 partial")     # a half-written archive
         raise OSError("disk full")
 
-    monkeypatch.setattr(restart.np, "savez", explode)
+    monkeypatch.setattr(restart, "write_npz", explode)
     with pytest.raises(OSError, match="disk full"):
         restart.write_restart(tmp_path / "rst.npz", state, cfg)
     assert list(tmp_path.iterdir()) == []

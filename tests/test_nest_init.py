@@ -871,11 +871,26 @@ def test_child_soil_uses_configured_geometry_and_matches_direct_provider(
     from gpuwm.ingest.ruc_soil import preprocess_ruc_soil
     from gpuwm.ingest.soil import preprocess_noah_soil
 
+    # The child seam first maps a foreign soil model's moisture onto the run's
+    # land model (gpuwm/ingest/land_state.py: ERA5's HTESSEL into RUC or Noah,
+    # HRRR's RUC into Noah), with the child's own soil classes; after that it
+    # is the direct provider itself. Record the seam's converted fields.
+    from gpuwm.ingest import land_state
+    converted_seen = []
+    convert = land_state.convert_source_soil_moisture
+
+    def recording(*args, **kwargs):
+        converted, receipt = convert(*args, **kwargs)
+        converted_seen.append(converted)
+        return converted, receipt
+    monkeypatch.setattr(land_state, "convert_source_soil_moisture", recording)
     result, fields, static = _child_binding_case(
         monkeypatch, 2, soil_case=(source, scheme, layers))
     provider = preprocess_ruc_soil if scheme == 3 else preprocess_noah_soil
+    assert len(converted_seen) == 1
+    converted = converted_seen[0]
     expected = provider(
-        fields, soil_type=static["SCT_DOM"], deep_soil_temperature=static["TMN"],
+        converted, soil_type=static["SCT_DOM"], deep_soil_temperature=static["TMN"],
         water_temperature_policy="wrf_compat",
         **({"num_soil_layers": layers} if scheme == 3 else {}))
     for name in ("soil_temperature", "soil_moisture", "liquid_moisture"):

@@ -55,8 +55,8 @@ def test_a_written_generation_is_kept():
 
 
 def test_one_inadmissible_domain_keeps_the_whole_tree_on_its_written_generation():
-    # The fill writes [shared]; a nest on RRTMGP would refuse gsd_41.
-    domains = [{}, {"ra_rrtmg_variant": "rte-rrtmgp"}]
+    # The fill writes [shared]; a nest with stochastic PBL would refuse gsd_41.
+    domains = [{}, {"spp_pbl": 1}]
     assert "bl_mynn_version" not in omitted_generation_selectors(
         dict(HRRR_SUITE), domains, "hrrr")
     assert omitted_generation_selectors(

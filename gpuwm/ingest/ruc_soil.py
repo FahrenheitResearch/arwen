@@ -549,6 +549,9 @@ class RucSoilState:
     #: The sea-ice cells of the Noah surface call, spelled as
     #: :class:`gpuwm.ingest.soil.NoahSoilState`'s ``sea_ice_cells``.
     sea_ice_cells: np.ndarray | None = None
+    #: :mod:`gpuwm.ingest.land_state`'s receipt (soil-moisture index remap
+    #: and same-model donor), spelled as NoahSoilState's.
+    land_state: Mapping[str, object] = field(default_factory=dict)
 
 
 def _midpoint_cm(name: str, prefix: str) -> int:
@@ -1078,6 +1081,7 @@ def preprocess_land_surface_soil(
     fractional_seaice: bool = False,
     soil_no_source_land=None,
     seaice_threshold: float = 100.0,
+    land_state=None,
 ):
     """Route a soil source to the selected land surface's own geometry.
 
@@ -1101,6 +1105,16 @@ def preprocess_land_surface_soil(
     :func:`gpuwm.ingest.soil.island_soil_columns` instead, before either
     geometry reads its source profiles, so every scheme builds its levels
     from the same column.  ``None`` or an empty mask changes nothing.
+
+    ``land_state`` (:class:`gpuwm.ingest.land_state.LandStateContext`) is
+    where and when the domain is.  Every call converts a source's soil
+    moisture to the target land model's hydraulics when their soil models
+    differ (the soil-moisture index remap, gpuwm/data/soil/land-state.v1.json);
+    with a context, a same-model analysis that covers the domain (HRRR's RUC
+    soil for a RUC run over CONUS) then replaces it on the land it covers.
+    Named breakage: an ERA5 start put HTESSEL soil moisture into RUC as is,
+    0.36 against HRRR's 0.21, and T2 ran 1-2 C cold with no storms
+    (WEATHER-AGI-2026-10-26 cold-teacher).
     """
 
     if not isinstance(fractional_seaice, bool):
@@ -1112,6 +1126,39 @@ def preprocess_land_surface_soil(
             fields, no_source_land=soil_no_source_land, soil_type=soil_type,
             landmask=landmask, lake_mask=lake_mask)
     scheme = int(sf_surface_physics)
+    from gpuwm.ingest.land_state import (apply_land_state_donor,
+                                         convert_source_soil_moisture)
+
+    fields, land_receipt = convert_source_soil_moisture(
+        fields, sf_surface_physics=scheme, soil_type=soil_type,
+        landmask=landmask, lake_mask=lake_mask,
+        soil_layer_contract=soil_layer_contract)
+    state = _route_land_surface_soil(
+        fields, scheme=scheme, soil_type=soil_type,
+        deep_soil_temperature=deep_soil_temperature, lake_mask=lake_mask,
+        lake_skin_temperature=lake_skin_temperature,
+        soil_layer_contract=soil_layer_contract,
+        num_soil_layers=num_soil_layers, landmask=landmask, terrain=terrain,
+        source_orography=source_orography,
+        water_temperature=water_temperature,
+        water_temperature_policy=water_temperature_policy,
+        soil_mesh=soil_mesh, route=route,
+        fractional_seaice=fractional_seaice,
+        seaice_threshold=seaice_threshold)
+    state, land_receipt = apply_land_state_donor(
+        state, sf_surface_physics=scheme, context=land_state,
+        receipt=land_receipt, landmask=landmask, lake_mask=lake_mask)
+    import dataclasses
+    return dataclasses.replace(state, land_state=land_receipt)
+
+
+def _route_land_surface_soil(
+    fields, *, scheme, soil_type, deep_soil_temperature, lake_mask,
+    lake_skin_temperature, soil_layer_contract, num_soil_layers, landmask,
+    terrain, source_orography, water_temperature, water_temperature_policy,
+    soil_mesh, route, fractional_seaice, seaice_threshold,
+):
+    """The dispatch on the land-surface selector (see the caller)."""
     if scheme == RUCLSMSCHEME:
         # The landmask/terrain/source-orography seam is forwarded whole:
         # preprocess_ruc_soil implements it with preprocess_noah_soil's

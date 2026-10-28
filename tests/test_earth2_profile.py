@@ -53,3 +53,14 @@ def test_short_forecast_keeps_next_boundary_without_loading_lazy_fields():
     assert _within_run_window(Lazy(), start, 3600) == (0, 1)
     assert _within_run_window(Lazy(), start, 21600) == (0, 1)
     assert _within_run_window(Lazy(), start + timedelta(hours=6), 3600) == (1, 2)
+
+
+def test_stormcast_mapping_reads_the_mslp_its_package_writes():
+    # WOOF run_025e9dd2419ae75e (2026-10-26): nvidia/stormcast-v1-era5-hrrr's metadata.zarr names the sea-level
+    # pressure "mslp", and prep refused "mapped field(s) ['air_pressure_at_mean_sea_level'] have no matching variable".
+    from gpuwm.mapped_source import load_mapping
+    for name in ("stormcast-hrrr", "stormcast-conus-hrrr", "pl13-q"):
+        mapping = load_mapping(ROOT / f"gpuwm/authorities/rw-wps-earth2-{name}-netcdf.mapping.json")
+        selectors = mapping["fields"]["air_pressure_at_mean_sea_level"]["selectors"]
+        assert [s["name"] for s in selectors] == [["msl", "mslp"]], name
+        assert mapping["producer_attributes"]["mslp"] == {"units": "Pa"}, name

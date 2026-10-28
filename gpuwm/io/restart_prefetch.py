@@ -14,8 +14,13 @@ _ACTIVE = ContextVar('gpuwm_restart_payloads', default={})
 
 
 def _identity(path):
+    # Device, inode, size and mtime name a content change: checkpoints are
+    # published by os.replace (a new inode), never rewritten in place. ctime
+    # is left out because the ensemble roster seal hard-links live checkpoint
+    # sets (U-E10, as E9 in restart_roster._source_revision); a link changes
+    # ctime, not a byte.
     stat = path.stat()
-    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
 
 
 @dataclass(frozen=True)

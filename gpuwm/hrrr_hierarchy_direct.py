@@ -953,6 +953,34 @@ def _validated_root_preparation_binding(
         raise ValueError("root preparation identity lacks domain_config")
     if not isinstance(prepared_domain.get("run"), dict):
         raise ValueError("root preparation domain_config lacks run controls")
+    differing = root_binding_differences(prepared_domain, root_domain)
+    if differing:
+        raise ValueError(
+            "native namelist d01 trajectory controls differ from the sealed "
+            f"root preparation: {', '.join(sorted(differing))}")
+
+    root_namelist_sha256 = identity.get("namelist_sha256")
+    if (not isinstance(root_namelist_sha256, str)
+            or len(root_namelist_sha256) != 64
+            or any(character not in "0123456789abcdef"
+                   for character in root_namelist_sha256)):
+        raise ValueError(
+            "root preparation identity has an invalid namelist_sha256")
+    return root_namelist_sha256, prepared_domain
+
+
+def root_binding_differences(prepared_domain: dict[str, object],
+                             root_domain) -> set[str]:
+    """The d01 trajectory fields ``root_domain`` holds differently.
+
+    ``prepared_domain`` is a prepared-domain identity document (a sealed
+    root's ``domain_config``).  The one rule the hierarchy binds a sealed
+    root by, also asked by the route-inputs choice
+    (:func:`gpuwm.hrrr_route_inputs.run_route_inputs`) before anything is
+    fetched, so a namelist set the binding would refuse is never the set
+    a run prepares from.
+    """
+
     effective_prepared_domain = effective_prepared_domain_config(
         deepcopy(prepared_domain))
     # Same rule as every other prepared-identity comparison: a field the
@@ -977,19 +1005,7 @@ def _validated_root_preparation_binding(
     not_in_use["start_time"] = live_root.get("start_time")
     _, differing = compare_prepared_domain_config(
         effective_prepared_domain, live_root, not_in_use=not_in_use)
-    if differing:
-        raise ValueError(
-            "native namelist d01 trajectory controls differ from the sealed "
-            f"root preparation: {', '.join(sorted(differing))}")
-
-    root_namelist_sha256 = identity.get("namelist_sha256")
-    if (not isinstance(root_namelist_sha256, str)
-            or len(root_namelist_sha256) != 64
-            or any(character not in "0123456789abcdef"
-                   for character in root_namelist_sha256)):
-        raise ValueError(
-            "root preparation identity has an invalid namelist_sha256")
-    return root_namelist_sha256, prepared_domain
+    return set(differing)
 
 
 def _expected_root_cache_identity(
@@ -1730,7 +1746,7 @@ def _chained_hierarchy_tail(c) -> dict[str, object]:
             input_provenance=_export_provenance(c.provenance, root_content),
             artifact_manifest_reference=(
                 "../hierarchy-artifacts/domain-artifacts.json"),
-            stock_wrf_export="optional")
+            stock_wrf_export=c.stock_wrf_export)
         start_states.require_sealed_is_head(
             result.artifacts.receipt, root_content_sha256=tree_root_content,
             **({} if posted is None else {"as_posted": {
@@ -1783,8 +1799,14 @@ def prepare_hrrr_hierarchy(
         cpu_bridge: Path | None = None, statics_corridor=None,
         acknowledgements: tuple[str, ...] = (),
         lifecycle_config: Path | None = None,
+        stock_wrf_export: str = "optional",
 ) -> dict[str, object]:
     """Verify one root preparation and publish generic stock-WRF inputs.
+
+    ``stock_wrf_export`` is the companion unchanged-WRF file set's mode:
+    ``"optional"`` (a state the WRF format cannot represent is recorded as
+    a REFUSED export manifest) or ``"off"`` (``gpuwm prep
+    --no-stock-wrf-export``: not attempted, NOT_REQUESTED in the receipt).
 
     ``statics_corridor`` opts this stage into sealing child-resolution
     statics over the ground each child can reach
@@ -2129,7 +2151,8 @@ def prepare_hrrr_hierarchy(
                 statics_corridor=statics_corridor, workers=workers,
                 cpu_bridge=cpu_bridge,
                 stock_wrf_namelist_input=Path(stock_wrf_namelist_input),
-                cache_header=cache_header, valid_time=valid_time))
+                cache_header=cache_header, valid_time=valid_time,
+                stock_wrf_export=stock_wrf_export))
         hierarchy_started = time.perf_counter()
         # Sealed BEFORE the children initialize, so each corridor child is
         # born on its crop (plan call 5, 2.9.0).  The export refuses an
@@ -2171,8 +2194,9 @@ def prepare_hrrr_hierarchy(
             # state gpuwm can integrate but the WRF file format cannot
             # represent is recorded as a REFUSED export manifest in the
             # receipt instead of destroying the preparation.  This route
-            # was the last caller inheriting "required".
-            stock_wrf_export="optional",
+            # was the last caller inheriting "required".  "off" is
+            # `gpuwm prep --no-stock-wrf-export` relayed (U-E6).
+            stock_wrf_export=stock_wrf_export,
         )
         hierarchy_seconds = time.perf_counter() - hierarchy_started
         verify_overlay_sequence(snapshots)
@@ -2310,6 +2334,11 @@ def _parser() -> argparse.ArgumentParser:
              "(e.g. 2,3).  Required before the prepared tree runner will "
              "honor a [relocation] follow source; omitted, the bundle is "
              "byte-for-byte unchanged")
+    parser.add_argument(
+        "--no-stock-wrf-export", dest="stock_wrf_export",
+        action="store_const", const="off", default="optional",
+        help="prepare the forecast only, and do not attempt the bonus "
+             "unchanged-WRF wrfinput/wrfbdy export")
     return parser
 
 
@@ -2360,6 +2389,7 @@ def main(argv=None) -> int:
         workers=args.workers, cpu_bridge=args.cpu_preprocess_bridge,
         statics_corridor=statics_corridor,
         lifecycle_config=args.lifecycle_config,
+        stock_wrf_export=args.stock_wrf_export,
     )
     # The forecast runner takes --preparation-receipt-sha256 over the
     # receipt this stage just wrote, and the emitted chain tells the

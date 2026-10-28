@@ -131,6 +131,10 @@ class NoahSoilState:
     #: threshold cell whose XICE stays below 0.02 under fractional sea ice.
     #: ``None`` from a constructor that predates the field.
     sea_ice_cells: np.ndarray | None = None
+    #: :mod:`gpuwm.ingest.land_state`'s receipt: the source and target soil
+    #: models, whether the moisture was index-remapped or copied, and the
+    #: same-model donor used (if any).  Set by the land-surface router.
+    land_state: Mapping[str, object] = field(default_factory=dict)
 
 
 def seaice_threshold_cells(skin, water, seaice_threshold, *, fallback=None):

@@ -29,10 +29,20 @@ covered strip takes the parent's accumulated rain since the child began
 instead of spinning up again; only the strip starts from the parent.
 
 THE RECORD.  The run folder holds one frame per output time (the segments'
-own frames, linked in time order), the last segment's final checkpoint (so
-the run is itself a parent for a further step, moving or not), the maps, and
-``moving-child.json``: every segment's window, placement, move and receipt,
-and every frame's footprint, so a further step can be checked inside it.
+own frames, hard-linked in time order), the last segment's final checkpoint
+(so the run is itself a parent for a further step, moving or not), the maps,
+and ``moving-child.json``: every segment's window, placement, move and
+receipt, and every frame's footprint, so a further step can be checked
+inside it.  The frames are ONE moving nest's history: every segment writes
+the child's start as its START_DATE and its place on the parent's lattice as
+I/J_PARENT_START, so a reader joins them across the moves as it joins a
+moving nest's frames, and the windows that span a segment's start (1 h
+rain, the 1 h maxima) are drawn over the run's own frames once each segment
+ends (:func:`draw_run_windows`).  A run-total window (1 h rain, the 6/12/24 h
+totals) on ground the grid reached during the window has no start value in
+the grid's own frames, so it is drawn again from a start on the grid's end
+place that takes the parent's rain since the child began there
+(:func:`draw_window_starts`).
 """
 
 from __future__ import annotations
@@ -45,6 +55,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -405,7 +416,6 @@ def crop_frame(source: Path, target: Path, *, origin_i: int, origin_j: int,
     in ``overrides`` (the segment's reference geometry) replace the frame's
     own, which :func:`crop_segment` checked agree within tolerance.
     """
-    from gpuwm.io.nc_writer_bridge import ClassicSchema
     from gpuwm.offline_child import open_parent_history
 
     i0 = int(window_i - origin_i)
@@ -439,16 +449,6 @@ def crop_frame(source: Path, target: Path, *, origin_i: int, origin_j: int,
                 values[name] = decoded[name][0]
         sizes = {"west_east": nx, "west_east_stag": nx + 1,
                  "south_north": ny, "south_north_stag": ny + 1}
-        schema = ClassicSchema(_container(dataset.format))
-        dimids = {}
-        unlimited = None
-        for name, dimension in dims.items():
-            if dimension.isunlimited():
-                unlimited = name
-                dimids[name] = schema.def_dim(name, 0, unlimited=True)
-            else:
-                dimids[name] = schema.def_dim(
-                    name, sizes.get(name, len(dimension)))
         updates = {
             "WEST-EAST_GRID_DIMENSION": np.int32(nx + 1),
             "SOUTH-NORTH_GRID_DIMENSION": np.int32(ny + 1),
@@ -462,41 +462,70 @@ def crop_frame(source: Path, target: Path, *, origin_i: int, origin_j: int,
         if centre is not None:
             updates["CEN_LAT"] = np.float32(centre[0])
             updates["CEN_LON"] = np.float32(centre[1])
-        for name, value in glob.items():
-            if name in updates:
-                continue
-            schema.put_global_attr(name, value)
-        for name, value in updates.items():
-            if name in glob or name.startswith("GPUWM_MOVING") or name in (
-                    "CEN_LAT", "CEN_LON"):
-                schema.put_global_attr(name, value)
-        varids = {}
-        for name, variable in dataset.variables.items():
-            varids[name] = schema.def_var(
-                name, variable.dtype, [dimids[d] for d in variable.dimensions])
-            for attr, value in attrs.get(name, {}).items():
-                schema.put_var_attr(varids[name], attr, value)
-        records = {name for name, variable in dataset.variables.items()
-                   if unlimited is not None and variable.dimensions
-                   and variable.dimensions[0] == unlimited}
-        nrec = len(dims[unlimited]) if unlimited is not None else 0
-        with schema.create(target) as writer:
-            for name, variable in dataset.variables.items():
-                data = (overrides or {}).get(name)
-                if data is None:
-                    array = np.asarray(values[name])
-                else:
-                    array = np.asarray(data).reshape(np.shape(values[name]))
-                dtype = variable.dtype
-                if dtype.kind != "S":
-                    array = array.astype(dtype)
-                if name in records:
-                    for record in range(nrec):
-                        writer.write_record(record, varids[name], array[record])
-                else:
-                    writer.write_var(varids[name], array)
+        updates = {name: value for name, value in updates.items()
+                   if name in glob or name.startswith("GPUWM_MOVING")
+                   or name in ("CEN_LAT", "CEN_LON")}
+        _write_like(dataset, target, values, glob=glob, attrs=attrs,
+                    sizes=sizes, updates=updates, overrides=overrides)
     return {"source": str(source), "target": str(target),
             "window_in_frame": [i0, j0, nx, ny]}
+
+
+def _write_like(dataset, target: Path, values, *, glob, attrs, sizes=None,
+                updates=None, overrides=None) -> None:
+    """Every variable of ``dataset`` (raw stored ``values``) to ``target``.
+
+    The Rust classic writer, with ``dataset``'s dimensions (those named in
+    ``sizes`` resized), global attributes (``updates`` replacing or adding
+    to ``glob``), variable attributes, types and records; the arrays in
+    ``overrides`` replace the stored ones.
+    """
+    from gpuwm.io.nc_writer_bridge import ClassicSchema
+
+    sizes = sizes or {}
+    updates = updates or {}
+    dims = dataset.dimensions
+    schema = ClassicSchema(_container(dataset.format))
+    dimids = {}
+    unlimited = None
+    for name, dimension in dims.items():
+        if dimension.isunlimited():
+            unlimited = name
+            dimids[name] = schema.def_dim(name, 0, unlimited=True)
+        else:
+            dimids[name] = schema.def_dim(
+                name, sizes.get(name, len(dimension)))
+    for name, value in glob.items():
+        if name in updates:
+            continue
+        schema.put_global_attr(name, value)
+    for name, value in updates.items():
+        schema.put_global_attr(name, value)
+    varids = {}
+    for name, variable in dataset.variables.items():
+        varids[name] = schema.def_var(
+            name, variable.dtype, [dimids[d] for d in variable.dimensions])
+        for attr, value in attrs.get(name, {}).items():
+            schema.put_var_attr(varids[name], attr, value)
+    records = {name for name, variable in dataset.variables.items()
+               if unlimited is not None and variable.dimensions
+               and variable.dimensions[0] == unlimited}
+    nrec = len(dims[unlimited]) if unlimited is not None else 0
+    with schema.create(target) as writer:
+        for name, variable in dataset.variables.items():
+            data = (overrides or {}).get(name)
+            if data is None:
+                array = np.asarray(values[name])
+            else:
+                array = np.asarray(data).reshape(np.shape(values[name]))
+            dtype = variable.dtype
+            if dtype.kind != "S":
+                array = array.astype(dtype)
+            if name in records:
+                for record in range(nrec):
+                    writer.write_record(record, varids[name], array[record])
+            else:
+                writer.write_var(varids[name], array)
 
 
 def _segment_geometry(segment: Segment) -> tuple[dict, dict]:
@@ -620,40 +649,364 @@ def strip_accumulations(segment: Segment, first: Footprint, *, ratio: int,
     """
     from gpuwm.offline_child_warm import STRIP_ACCUMULATOR_HISTORY
 
-    names = tuple(STRIP_ACCUMULATOR_HISTORY.values())
-    now = segment.frames[0]
-    # The child's parent cells with a one-cell ring (inside the window's
-    # margin, so inside the frame).
-    gi, gj = segment.child_i - 1, segment.child_j - 1
-    ni, nj = segment.span_i + 2, segment.span_j + 2
-    later = read_window_fields(now.path, names, i0=gi - now.origin_i,
-                               j0=gj - now.origin_j, ni=ni, nj=nj)
-    if not later:
+    # The child's parent cells with a one-cell ring lie inside the window's
+    # margin, so inside the frame: nothing is missing here.
+    since = parent_accumulations_since(
+        segment.frames[0], first, child_i=segment.child_i,
+        child_j=segment.child_j, span_i=segment.span_i,
+        span_j=segment.span_j, ratio=ratio,
+        names=tuple(STRIP_ACCUMULATOR_HISTORY.values()))
+    if not since:
         return None
-    lo_i = max(gi, first.origin_i)
-    hi_i = min(gi + ni, first.origin_i + first.nx)
-    lo_j = max(gj, first.origin_j)
-    hi_j = min(gj + nj, first.origin_j + first.ny)
-    earlier = {}
-    if lo_i < hi_i and lo_j < hi_j:
-        earlier = read_window_fields(
-            first.path, names, i0=lo_i - first.origin_i,
-            j0=lo_j - first.origin_j, ni=hi_i - lo_i, nj=hi_j - lo_j)
-    out = {}
-    for slot, name in STRIP_ACCUMULATOR_HISTORY.items():
-        if name not in later:
-            continue
-        value = np.array(later[name].reshape(nj, ni))
-        if name in earlier:
-            before = earlier[name].reshape(hi_j - lo_j, hi_i - lo_i)
-            value[lo_j - gj:hi_j - gj, lo_i - gi:hi_i - gi] -= before
-        value = np.maximum(value, 0.0)
-        out[slot] = _bilinear_to_child(
-            value, ratio=ratio, span_i=segment.span_i,
-            span_j=segment.span_j).astype(np.float32)
+    out = {slot: since[name] for slot, name in STRIP_ACCUMULATOR_HISTORY.items()
+           if name in since}
     target.parent.mkdir(parents=True, exist_ok=True)
     np.savez(target, **out)
     return target
+
+
+def parent_accumulations_since(now: Footprint, first: Footprint, *,
+                               child_i: int, child_j: int, span_i: int,
+                               span_j: int, ratio: int,
+                               names) -> dict[str, np.ndarray]:
+    """The parent's accumulations from ``first`` to ``now`` on a child grid.
+
+    The child sits at lattice cell (``child_i``, ``child_j``) with
+    ``span_i`` x ``span_j`` parent cells.  Each of ``names`` the ``now``
+    frame carries is its value minus ``first``'s at the same ground (ground
+    ``first`` did not cover counts from the parent's own start there),
+    floored at zero and interpolated bilinearly onto the child's cells
+    (float32, keyed by history name).  Parent cells ``now`` does not cover
+    are NaN, and so is every child cell they reach.
+    """
+    gi, gj = child_i - 1, child_j - 1
+    ni, nj = span_i + 2, span_j + 2
+    lo_i, hi_i = max(gi, now.origin_i), min(gi + ni, now.origin_i + now.nx)
+    lo_j, hi_j = max(gj, now.origin_j), min(gj + nj, now.origin_j + now.ny)
+    if lo_i >= hi_i or lo_j >= hi_j:
+        return {}
+    later = read_window_fields(now.path, names, i0=lo_i - now.origin_i,
+                               j0=lo_j - now.origin_j, ni=hi_i - lo_i,
+                               nj=hi_j - lo_j)
+    if not later:
+        return {}
+    e_lo_i = max(gi, first.origin_i)
+    e_hi_i = min(gi + ni, first.origin_i + first.nx)
+    e_lo_j = max(gj, first.origin_j)
+    e_hi_j = min(gj + nj, first.origin_j + first.ny)
+    earlier = {}
+    if e_lo_i < e_hi_i and e_lo_j < e_hi_j:
+        earlier = read_window_fields(
+            first.path, names, i0=e_lo_i - first.origin_i,
+            j0=e_lo_j - first.origin_j, ni=e_hi_i - e_lo_i,
+            nj=e_hi_j - e_lo_j)
+    out = {}
+    for name in names:
+        if name not in later:
+            continue
+        value = np.full((nj, ni), np.nan)
+        value[lo_j - gj:hi_j - gj, lo_i - gi:hi_i - gi] = later[name].reshape(
+            hi_j - lo_j, hi_i - lo_i)
+        if name in earlier:
+            before = earlier[name].reshape(e_hi_j - e_lo_j, e_hi_i - e_lo_i)
+            value[e_lo_j - gj:e_hi_j - gj, e_lo_i - gi:e_hi_i - gi] -= before
+        value = np.maximum(value, 0.0)
+        out[name] = _bilinear_to_child(
+            value, ratio=ratio, span_i=span_i, span_j=span_j).astype(np.float32)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Windows that start before the grid reached their ground
+# ---------------------------------------------------------------------------
+
+#: The run totals a window on a moving grid starts from: the precipitation
+#: the renderer adds up (RAINC + RAINNC + RAINSH, rw_wrfbatch total_precip)
+#: and the strip's other accumulators (offline_child_warm
+#: STRIP_ACCUMULATOR_HISTORY).
+WINDOW_START_ACCUMULATORS = ("RAINC", "RAINNC", "RAINSH", "SNOWNC",
+                             "GRAUPELNC", "HAILNC")
+
+#: The windowed products a wrfout history draws as the difference of two
+#: run totals (rusty-weather windowed_store qpf_difference: the store holds
+#: no hourly increment), and their window in hours.
+DIFFERENCED_WINDOWS = {"qpf_1h": 1, "qpf_6h": 6, "qpf_12h": 12, "qpf_24h": 24}
+
+WINDOW_STARTS_DIR = "window-starts"
+
+
+def _segment_at(segments, when: datetime):
+    """The segment whose frame the run folder keeps at ``when``.
+
+    A segment after the first starts on the time the one before it ended,
+    and the earlier segment's frame is the one kept there (:class:`_Collector`).
+    """
+    for segment in segments:
+        if segment.start <= when <= segment.end:
+            return segment
+    return None
+
+
+def reseeded_after(moves, end_place, *, nx: int, ny: int, ratio: int,
+                   ring: int) -> np.ndarray:
+    """The cells of the grid at ``end_place`` a later warm start reseeded.
+
+    ``moves`` are the (from place, to place) lattice moves the grid made
+    after a window's start.  At each, the warm start gave the parent's
+    rain to the freshly covered strip and the earlier child's specified
+    ring (``ring`` cells, the child's spec_zone): the same mask
+    (offline_child_warm._strip_mask) on the same plan the warm start
+    builds.  True on every cell of the end grid that took it at any of them.
+    """
+    from gpuwm.core.nest_relocation import Placement, plan_relocation
+    from gpuwm.offline_child_warm import _strip_mask
+
+    out = np.zeros((ny, nx), dtype=bool)
+    for before, after in moves:
+        shift_i = (after[0] - before[0]) * ratio
+        shift_j = (after[1] - before[1]) * ratio
+        base = 1 + max(abs(shift_i), abs(shift_j))
+        plan = plan_relocation(
+            placement_from=Placement(grid_id=2, i_parent_start=base,
+                                     j_parent_start=base),
+            placement_to=Placement(grid_id=2, i_parent_start=base + shift_i,
+                                   j_parent_start=base + shift_j),
+            parent_grid_ratio=1, child_nx=nx, child_ny=ny)
+        mask = _strip_mask(plan, (ny, nx), ring=ring)
+        # End-grid cell (j, i) is cell (j + dj, i + di) of the grid it moved to.
+        di = (end_place[0] - after[0]) * ratio
+        dj = (end_place[1] - after[1]) * ratio
+        lo_i, hi_i = max(0, -di), min(nx, nx - di)
+        lo_j, hi_j = max(0, -dj), min(ny, ny - dj)
+        if lo_i < hi_i and lo_j < hi_j:
+            out[lo_j:hi_j, lo_i:hi_i] |= mask[lo_j + dj:hi_j + dj,
+                                              lo_i + di:hi_i + di]
+    return out
+
+
+def window_start_values(start_frame: Path, *, start_place, end_place,
+                        nx: int, ny: int, ratio: int,
+                        parent_now: Footprint | None,
+                        parent_first: Footprint,
+                        reseeded: np.ndarray | None = None) -> tuple[dict, dict]:
+    """The run totals at a window's start, on the grid's place at its end.
+
+    ``start_frame`` is the grid's own frame at the window's start, at
+    lattice place ``start_place``; ``end_place`` is where the grid is when
+    the window ends.  Ground the grid covered at the start, and kept its own
+    totals on until the end, keeps its own frame's values.  Ground it
+    reached later, and ground a later warm start gave the parent's rain
+    (``reseeded``, :func:`reseeded_after`: the strip and the earlier
+    child's specified ring), takes the parent's accumulation since the
+    child began, at the window's start (:func:`parent_accumulations_since`,
+    the quantity the warm start gives that ground,
+    :func:`strip_accumulations`), so the window there is the parent's rain
+    until the warm start plus the grid's own after.  An accumulator the
+    parent does not carry starts from zero there, as the warm start leaves
+    it; ground the parent did not cover at the start either stays missing
+    (NaN).
+
+    Returns ``(values, cells)``: the arrays by history name, and how many
+    cells came from the grid's own frame, from the parent, and are missing.
+    """
+    from gpuwm.offline_child_warm import STRIP_ACCUMULATOR_HISTORY
+
+    own = read_window_fields(start_frame, WINDOW_START_ACCUMULATORS,
+                             i0=0, j0=0, ni=nx, nj=ny)
+    parent = {}
+    if parent_now is not None:
+        parent = parent_accumulations_since(
+            parent_now, parent_first, child_i=end_place[0],
+            child_j=end_place[1], span_i=nx // ratio, span_j=ny // ratio,
+            ratio=ratio, names=tuple(STRIP_ACCUMULATOR_HISTORY.values()))
+    covered = None
+    if parent:
+        covered = np.isfinite(next(iter(parent.values())))
+    di = (end_place[0] - start_place[0]) * ratio
+    dj = (end_place[1] - start_place[1]) * ratio
+    # End-grid cells [lo, hi) are start-grid cells [lo + d, hi + d).
+    lo_i, hi_i = max(0, -di), min(nx, nx - di)
+    lo_j, hi_j = max(0, -dj), min(ny, ny - dj)
+    keep = np.zeros((ny, nx), dtype=bool)
+    if lo_i < hi_i and lo_j < hi_j:
+        keep[lo_j:hi_j, lo_i:hi_i] = True
+    if parent and reseeded is not None:
+        # Without the parent's rain the warm start reseeded nothing.
+        keep &= ~reseeded
+    values = {}
+    for name, stored in own.items():
+        stored = stored.reshape(ny, nx)
+        if name in parent:
+            start = parent[name].astype(np.float64)
+        elif covered is not None:
+            start = np.where(covered, 0.0, np.nan)
+        else:
+            start = np.full((ny, nx), np.nan)
+        if lo_i < hi_i and lo_j < hi_j:
+            moved = np.full((ny, nx), np.nan)
+            moved[lo_j:hi_j, lo_i:hi_i] = stored[lo_j + dj:hi_j + dj,
+                                                 lo_i + di:hi_i + di]
+            start[keep] = moved[keep]
+        values[name] = start
+    own_cells = int(keep.sum())
+    reference = values.get("RAINNC", next(iter(values.values()), None))
+    missing = 0 if reference is None else int(np.isnan(reference).sum())
+    return values, {"own": own_cells,
+                    "parent": nx * ny - own_cells - missing,
+                    "missing": missing}
+
+
+def write_window_start(end_frame: Path, target: Path, *, when: datetime,
+                       values: dict) -> Path:
+    """The frame a window starts from, on the grid's place at its end.
+
+    ``end_frame`` (the window's closing frame) with its time set to
+    ``when`` (``Times``, and ``XTIME`` counted back by the window) and the
+    run totals in ``values`` replacing its own.  It is drawn from as the
+    window's start and nothing else: :func:`draw_window_starts` asks only
+    the differenced windows of it and removes it after the draw.  Its other
+    fields are the closing frame's, so it carries the closing frame's grid,
+    place and identity, which is what joins it to that frame's series.
+    """
+    from gpuwm.offline_child import open_parent_history
+
+    glob, attrs = _typed_attrs(end_frame)
+    with open_parent_history(end_frame) as dataset:
+        names = list(dataset.variables)
+        decoded = dataset._decode(names, raw=True, scale=False)
+        stored = {name: decoded[name][0] for name in names}
+        times = np.asarray(stored["Times"])
+        if times.shape[0] != 1:
+            raise MovingDownscaleRefusal(
+                f"{end_frame.name} holds {times.shape[0]} times; a window "
+                "start is cut from a one-time frame")
+        end = _frame_time(end_frame)
+        stamp = when.strftime("%Y-%m-%d_%H:%M:%S").encode("ascii")
+        overrides = {"Times": np.frombuffer(stamp, dtype="S1").reshape(times.shape)}
+        if "XTIME" in stored:
+            overrides["XTIME"] = (np.asarray(stored["XTIME"], dtype=np.float64)
+                                  - (end - when).total_seconds() / 60.0)
+        for name, array in values.items():
+            if name in stored:
+                overrides[name] = np.asarray(array).reshape(np.shape(stored[name]))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _write_like(dataset, target, stored, glob=glob, attrs=attrs,
+                    overrides=overrides)
+    return target
+
+
+def _differenced_windows(render_products) -> dict[str, int]:
+    """The differenced windows (:data:`DIFFERENCED_WINDOWS`) a request asks for."""
+    from gpuwm.live_products import catalog_windowed_slugs, windowed_request
+
+    if render_products is None or str(render_products).strip().lower() in ("", "none"):
+        return {}
+    request = windowed_request(render_products, catalog_windowed_slugs)
+    terms = {term.strip().lower() for term in str(request).split(",") if term.strip()}
+    if "windowed" in terms:
+        return dict(DIFFERENCED_WINDOWS)
+    return {slug: hours for slug, hours in DIFFERENCED_WINDOWS.items() if slug in terms}
+
+
+def draw_window_starts(out: Path, closing, render_products, *, segments,
+                       parent_frames, parent_first: Footprint, ratio: int,
+                       nx: int, ny: int, scratch: Path, ring: int = 1) -> dict:
+    """The differenced windows ending on ``closing`` whose start the grid left.
+
+    A run-total window (1 h rain, the 6/12/24 h totals) is the closing
+    frame's run total minus the one at the window's start.  When the grid
+    moved in between, the start frame sits at another place and the
+    renderer, joining the two places (rw_wrfbatch nest_move), has no start
+    value on the ground the grid reached later, so the window is drawn only
+    on ground the grid kept: on a 333 m grid that moves most of its own
+    width an hour, almost none of it.  Here each such window is drawn again
+    from a start frame on the closing frame's own place
+    (:func:`window_start_values`, :func:`write_window_start`), the grid's
+    own values where it was and the parent's since the child began where it
+    was not, so the window covers the whole grid.  ``segments`` are the
+    segments run so far, the last being the one whose frames close;
+    ``ring`` is the child's spec_zone, the earlier child's ring each warm
+    start gives the parent's rain (:func:`reseeded_after`).
+
+    Breakage it prevents: a WOOF setup run's moving 333 m grid showed its
+    1 h rain on 22 % of the grid, and the storms, all on ground the grid
+    reached during the hour, not at all (regional-storm test, HRRR
+    2025-05-19, 2026-10-27).
+    """
+    from gpuwm.go_cli import render_command, render_inputs_file
+
+    record = {"frames": [Path(f).name for f in closing], "products": None,
+              "starts": [], "draws": [], "maps": 0, "seconds": 0.0}
+    windows = _differenced_windows(render_products)
+    if not closing or not windows or not segments:
+        return record
+    record["products"] = ",".join(windows)
+    end = segments[-1]
+    end_place = (end.child_i, end.child_j)
+    domain = _frame_domain(Path(closing[0]))
+    own_frames = {_frame_time(f): f for f in out.glob(f"wrfout_d{domain:02d}_*")
+                  if _FRAME_NAME.match(f.name)}
+    starts: dict[datetime, Path] = {}
+    wall = time.time()
+    started = time.perf_counter()
+    render = out / "png"
+    try:
+        for frame in sorted(Path(f) for f in closing):
+            closes = _frame_time(frame)
+            wanted = []
+            for slug, hours in windows.items():
+                when = closes - timedelta(hours=hours)
+                source = _segment_at(segments, when)
+                start_frame = own_frames.get(when)
+                if source is None or start_frame is None:
+                    continue
+                start_place = (source.child_i, source.child_j)
+                if start_place == end_place:
+                    continue        # the run folder's own frames close it
+                if when not in starts:
+                    after = segments.index(source)
+                    moves = [((a.child_i, a.child_j), (b.child_i, b.child_j))
+                             for a, b in zip(segments[after:], segments[after + 1:])]
+                    values, cells = window_start_values(
+                        start_frame, start_place=start_place,
+                        end_place=end_place, nx=nx, ny=ny, ratio=ratio,
+                        parent_now=parent_frames.get(when),
+                        parent_first=parent_first,
+                        reseeded=reseeded_after(moves, end_place, nx=nx,
+                                                ny=ny, ratio=ratio, ring=ring))
+                    starts[when] = write_window_start(
+                        frame, scratch / start_frame.name, when=when,
+                        values=values)
+                    record["starts"].append({
+                        "time": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "from_place": list(start_place),
+                        "end_place": list(end_place), "cells": cells})
+                wanted.append((slug, when))
+            if not wanted:
+                continue
+            plan = {"render": render,
+                    "render_products": ",".join(slug for slug, _ in wanted)}
+            context = sorted({starts[when] for _, when in wanted})
+            with render_inputs_file() as inputs:
+                command = render_command(plan, [frame], context_frames=context,
+                                         inputs_file=inputs)
+                completed = subprocess.run(command, capture_output=True, text=True)
+            draw = {"frame": frame.name, "products": plan["render_products"],
+                    "rc": completed.returncode}
+            if completed.returncode != 0:
+                draw["stderr"] = (completed.stderr or "")[-2000:]
+                print(f"gpuwm downscale --follow: {plan['render_products']} "
+                      f"ending on {frame.name} was not drawn from its start "
+                      f"on this place (render exited {completed.returncode}): "
+                      f"{draw['stderr'][-400:]}", flush=True)
+            record["draws"].append(draw)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    record["seconds"] = round(time.perf_counter() - started, 1)
+    record["maps"] = sum(
+        1 for p in (render.rglob("*.png") if render.is_dir() else ())
+        if not p.is_symlink() and p.stat().st_mtime >= wall - 1.0)
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -698,6 +1051,24 @@ def _link(source: Path, target: Path) -> None:
         shutil.copy2(source, target)
 
 
+def _link_frame(source: Path, target: Path) -> None:
+    """A history frame into the run folder as a file OF that folder.
+
+    A hard link (a copy where the disk cannot link): the frames of every
+    segment then sit in one folder, which is what makes them one run to a
+    reader.  The renderer keys a history series on the folder its file is
+    in, after following symbolic links (gpuwm.render
+    _history_series_identity), so symlinked frames read as one run per
+    segment folder and a window spanning a segment start was never drawn.
+    """
+    if target.exists() or target.is_symlink():
+        return
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy2(source, target)
+
+
 class _Collector:
     """Links each segment's frames and maps into the run folder as they land.
 
@@ -720,7 +1091,7 @@ class _Collector:
                 if _FRAME_NAME.match(frame.name) is None or frame.name in self.frames:
                     continue
                 self.frames.add(frame.name)
-                _link(frame, self.out / frame.name)
+                _link_frame(frame, self.out / frame.name)
             png = folder / "png"
             if not png.is_dir():
                 return
@@ -747,6 +1118,100 @@ class _Collector:
                                   daemon=True)
         thread.start()
         return stop, thread
+
+
+def _child_spec_zone(out: Path) -> int:
+    """The child's spec_zone, the ring its warm starts reseed (default 1).
+
+    Read from the child configuration the run folder keeps (the first
+    segment's, which every segment shares but for its placement), the
+    value offline_child_warm.apply_warm_start reads off the child's config.
+    """
+    import tomllib
+
+    from gpuwm.config import RunConfig
+
+    default = int(RunConfig.spec_zone)
+    for config in sorted(out.glob("*.toml")):
+        try:
+            document = tomllib.loads(config.read_text("utf-8"))
+        except (OSError, ValueError):
+            continue
+        value = (document.get("run") or {}).get("spec_zone")
+        if value is not None:
+            return int(value or 0)
+    return default
+
+
+def _segment_render_products(folder: Path) -> str | None:
+    """The product request a segment was drawn with (its plan's admitted spec)."""
+    from gpuwm.downscale import DOWNSCALE_PLAN_NAME
+
+    try:
+        plan = json.loads((folder / DOWNSCALE_PLAN_NAME).read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = plan.get("render_products")
+    return None if value is None else str(value)
+
+
+def draw_run_windows(out: Path, closing, render_products) -> dict:
+    """The windows ending on ``closing``, drawn over the run folder's frames.
+
+    A segment draws what its own frames hold, and every window that reaches
+    back past its start (1 h rain at the first whole hour of a segment, a
+    6 h or run-total window at any hour) needs frames earlier segments
+    wrote, which only the run folder holds as one history.  So once a
+    segment's frames are in, its whole-hour frames are drawn again for the
+    windowed part of the request alone (live_products.windowed_request),
+    beside every earlier frame of the grid: the context the end-of-run
+    windowed pass of every other route gives a window
+    (live_products.windowed_passes).  The renderer joins the frames at
+    earlier places as one moving nest's (rw_wrfbatch nest_move), so the
+    windows close across the moves.
+
+    Breakage it prevents: WOOF setup-following runs showed no 1 h rain on
+    their moving 1 km and 333 m grids at any hour (production
+    run_54ce6aa98bdfdfe9, 2026-10-27).
+    """
+    from gpuwm.go_cli import render_command, render_inputs_file
+    from gpuwm.live_products import catalog_windowed_slugs, windowed_request
+
+    closing = sorted(Path(f) for f in closing)
+    record = {"frames": [f.name for f in closing], "products": None,
+              "context": 0, "rc": None, "maps": 0, "seconds": 0.0}
+    if not closing or render_products is None or str(render_products).strip().lower() in ("", "none"):
+        return record
+    request = windowed_request(render_products, catalog_windowed_slugs)
+    record["products"] = request or None
+    if not request:
+        return record
+    domains = {f.name[:len("wrfout_dNN")] for f in closing}
+    last = closing[-1].name
+    context = sorted(
+        f for f in out.glob("wrfout_d*")
+        if _FRAME_NAME.match(f.name) and f.name[:len("wrfout_dNN")] in domains
+        and f.name < last and f not in closing)
+    record["context"] = len(context)
+    render = out / "png"
+    wall = time.time()
+    started = time.perf_counter()
+    plan = {"render": render, "render_products": request}
+    with render_inputs_file() as inputs:
+        command = render_command(plan, closing, context_frames=context,
+                                 inputs_file=inputs)
+        completed = subprocess.run(command, capture_output=True, text=True)
+    record["seconds"] = round(time.perf_counter() - started, 1)
+    record["rc"] = completed.returncode
+    record["maps"] = sum(
+        1 for p in (render.rglob("*.png") if render.is_dir() else ())
+        if not p.is_symlink() and p.stat().st_mtime >= wall - 1.0)
+    if completed.returncode != 0:
+        record["stderr"] = (completed.stderr or "")[-2000:]
+        print(f"gpuwm downscale --follow: the windows ending on "
+              f"{', '.join(record['frames'])} were not drawn (render exited "
+              f"{completed.returncode}): {record['stderr'][-400:]}", flush=True)
+    return record
 
 
 def _target_track(args, footprints, point):
@@ -930,7 +1395,9 @@ def moving_downscale_main(args) -> int:
           f"following {basis}", flush=True)
     runs = []
     previous = None
+    parent_frames = {f.valid_time: f for f in footprints}
     collector = _Collector(out)
+    window_maps = 0
     for segment in segments:
         seg_started = time.perf_counter()
         name = f"s{segment.index:02d}"
@@ -964,7 +1431,13 @@ def moving_downscale_main(args) -> int:
             point=f"{point_lat!r},{point_lon!r}",
             child_size=f"{child_nx},{child_ny}", ratio=ratio,
             hours=(segment.end - segment.start).total_seconds() / 3600.0,
-            out=seg_out, simulation_start=start, **warm)
+            out=seg_out, simulation_start=start,
+            # Where this segment's frames say the child sits: its place on
+            # the parent's lattice (1-based, as WRF counts), not in the
+            # window it runs in, so that every segment's frames are one
+            # moving nest's history (offline_child_run._write_frame).
+            history_parent_start=(segment.child_i + 1, segment.child_j + 1),
+            **warm)
         print(f"gpuwm downscale --follow: segment {segment.index + 1} of "
               f"{len(segments)}, {segment.start:%H:%M}-{segment.end:%H:%M}, "
               f"child at lattice ({segment.child_i}, {segment.child_j})"
@@ -1009,6 +1482,28 @@ def moving_downscale_main(args) -> int:
             "wall_seconds": time.perf_counter() - seg_started,
             "child_wall_seconds": report.get("wall_seconds"),
         })
+        # The windows this segment's whole hours close, over the run's own
+        # history (every segment's frames), now that its frames are in.
+        closing = [out / name for name in sorted(collector.frames)
+                   if _frame_domain(Path(name)) == domain + 1
+                   and segment.start < _frame_time(Path(name)) <= segment.end
+                   and _frame_time(Path(name)).minute == 0
+                   and _frame_time(Path(name)).second == 0]
+        products = _segment_render_products(seg_out)
+        windows = draw_run_windows(out, closing, products)
+        window_maps += windows["maps"]
+        record["segments"][-1]["run_windows"] = windows
+        # The run-total windows among them that start before the grid
+        # reached part of their ground, drawn again from a start on this
+        # segment's place (the parent's values where the grid was not).
+        moved = draw_window_starts(
+            out, closing, products, segments=segments[:segment.index + 1],
+            parent_frames=parent_frames, parent_first=footprints[0],
+            ratio=ratio, nx=child_nx, ny=child_ny,
+            scratch=out / SEGMENTS_DIR / f"{name}-{WINDOW_STARTS_DIR}",
+            ring=_child_spec_zone(out))
+        window_maps += moved["maps"]
+        record["segments"][-1]["window_starts"] = moved
         (out / MOVING_CHILD_RECORD).write_text(
             json.dumps(record, indent=2, sort_keys=True, default=str) + "\n",
             encoding="utf-8")
@@ -1024,7 +1519,8 @@ def moving_downscale_main(args) -> int:
         # follows the same storm (find_storm_track looks beside the frames).
         _write_track_window(track_path, out / f"storm-track.d{domain + 1:02d}.csv",
                             start=start, end=start + timedelta(seconds=seconds))
-    assembled = {"frames": len(collector.frames), "maps": len(collector.maps)}
+    assembled = {"frames": len(collector.frames), "maps": len(collector.maps),
+                 "run_window_maps": window_maps}
     passed = (len(runs) == len(segments)
               and all(r["result"] == "PASS" for r in runs))
     record["frames"] = _child_frame_footprints(
@@ -1050,7 +1546,10 @@ def moving_downscale_main(args) -> int:
 
 
 __all__ = ["CROP_MARGIN_PARENT_CELLS", "DEFAULT_FOLLOW_EVERY_SECONDS",
-           "FOLLOW_MODES", "MOVING_CHILD_RECORD", "MOVING_CHILD_SCHEMA",
-           "MovingDownscaleRefusal", "child_targets", "crop_frame",
-           "frame_footprints", "moving_downscale_main", "plan_segments",
-           "strip_accumulations", "window_physics_evidence"]
+           "DIFFERENCED_WINDOWS", "FOLLOW_MODES", "MOVING_CHILD_RECORD",
+           "MOVING_CHILD_SCHEMA", "MovingDownscaleRefusal",
+           "WINDOW_START_ACCUMULATORS", "child_targets", "crop_frame",
+           "draw_window_starts", "frame_footprints", "moving_downscale_main",
+           "parent_accumulations_since", "plan_segments", "reseeded_after",
+           "strip_accumulations", "window_physics_evidence",
+           "window_start_values", "write_window_start"]

@@ -45,10 +45,10 @@ _SMALL_CARD_REQUEST = ["domain", "--point", "35.5,-97.5", "--root-dx", "3",
     # Scheme choices stay on the request that follows the advice, over the
     # suite it names, so a suite is priced with them.  The microphysics
     # row is aerosol-aware Thompson: since 4193eb0da the HRRR default is
-    # the gsd41 template, whose scalar_pblmix=1 reads Thompson-aerosol
-    # fields only, so any other microphysics over it is refused by name
-    # before any pricing (2f65da582); the row's question, a scheme pinned
-    # over every lighter suite, is asked with the one it accepts.
+    # the gsd41 template, whose scalar_pblmix=1 read Thompson-aerosol
+    # fields only until U-E4, so any other microphysics over it was refused
+    # by name before any pricing (2f65da582); the row's question, a scheme
+    # pinned over every lighter suite, is asked with the HRRR scheme.
     '{"microphysics": "thompson-aerosol-mp28"}',
     '{"cumulus": "off"}',
 ])

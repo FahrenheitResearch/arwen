@@ -2188,6 +2188,20 @@ class StreamedDomain:
         if stochastic is not None and stochastic.enabled:
             from gpuwm.ensemble.stochastic_streaming import attach_stochastic_sweep_lease
             attach_stochastic_sweep_lease(self._run, stochastic)
+        # An IAU forcing (gpuwm.da.iau) and a door's post-step acts ride the
+        # domain state, which a streamed domain never steps: the sweep serves
+        # them to each compute window (IauSweepLease), or the window's step
+        # would integrate the whole IAU window with nothing forced (G10).
+        if (getattr(state, "_iau_forcing", None) is not None
+                or getattr(state, "_iau_after_step", None) is not None
+                or getattr(self._run, "_iau_sweep_lease", None) is not None):
+            if getattr(self._run, "ranked", False):
+                raise StreamingRefused(
+                    "this domain carries an IAU forcing and is split over [devices] "
+                    "ranks; a rank slab carries no forcing, so the increment would "
+                    "never be applied (G10).  Run it resident or on [tiles]")
+            from gpuwm.da.iau import attach_iau_sweep_lease
+            attach_iau_sweep_lease(self._run, state)
 
         if int(getattr(cfg, 'ifire', 0)) == 2 and int(getattr(cfg, 'fire_test_steps', 0)) > 0:
             from gpuwm.sfire_debug import run_streamed_test_steps

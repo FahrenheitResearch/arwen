@@ -2193,6 +2193,38 @@ RUC_OPTION_IDENTITY: dict[str, object] = {
 }
 
 
+#: The scalars WRF v4.6.1's ``scalar_pblmix`` diffuses for each ported
+#: microphysics selector, by their gpuwm state names.  diff4d
+#: (phys/module_pbl_driver.F:2668-2671) runs over every member of the
+#: ``scalar`` array except QNS, QNR, QNG, QNH, QT, QVOLG and QKE_ADV, so a
+#: row is the scheme's Registry.EM_COMMON scalar package less those:
+#: thompson (8) qni,qnr -> qni; milbrandt2mom (9) qnc,qnr,qni,qns,qng,qnh ->
+#: qnc,qni; morr_two_moment (10) qni,qns,qnr,qng -> qni (its nc is
+#: diagnostic, not a scalar member); wdm6scheme (16) qnn,qnc,qnr ->
+#: qnn,qnc; nssl_2mom (18, nssl2mconc + nssl_ccn_opt + nssl_hailvol)
+#: qndrop,qnr,qni,qns,qng,qnh,qnn,qvolg,qvolh -> qndrop,qni,qnn,qvolh;
+#: thompsonaero (28) -> qnc,qni,qnwfa,qnifa (the engine carries no qnbca);
+#: p3_1category (50) qni,qnr,qir,qib -> qni,qir,qib; TEMPO (900)
+#: nc,nr,ni,ng,volg,nwfa,nifa -> nc,ni,nwfa,nifa.  The packages with no
+#: scalar member, and Ferrier (5), whose one scalar QT diff4d skips, mix
+#: nothing: WRF's diff4d loop runs and changes no field.  A scheme with no
+#: row (Fast-SBM's bin scalars) is refused until it has one; a new row is
+#: table work, not a new code path.
+SCALAR_PBLMIX_SPECIES: dict[int, tuple[str, ...]] = {
+    0: (), 1: (), 2: (), 3: (), 4: (), 5: (), 6: (), 24: (), 106: (),
+    8: ("ni",), 9: ("nc", "ni"), 10: ("ni",), 16: ("nn", "nc"),
+    18: ("qndrop", "qni", "qnn", "qvolh"),
+    28: ("nc", "ni", "nwfa", "nifa"),
+    50: ("ni", "qir", "qib"),
+    900: ("nc", "ni", "nwfa", "nifa"),
+}
+
+
+def scalar_pblmix_species(cfg) -> tuple[str, ...]:
+    """The state fields ``scalar_pblmix=1`` diffuses for ``cfg``'s microphysics."""
+    return SCALAR_PBLMIX_SPECIES[int(cfg.mp_physics)]
+
+
 def scalar_pblmix_exchange(cfg) -> dict | None:
     """The registry's EXCH_H producer row for ``cfg``'s PBL scheme, or None."""
     from gpuwm.physics_registry import consumer_row_for_selector
@@ -2217,10 +2249,12 @@ def validate_scalar_pblmix_consumer(cfg) -> None:
 
     WRF runs diff4d on the selected scheme's EXCH_H after any PBL scheme
     (module_pbl_driver.F:2251-2259, v4.6.1); the registry row
-    ``scalar_diffusion_exchange`` names each producer.  The implemented
-    solve carries the mp=28 nc/ni/nwfa/nifa family, so a producer with any
-    other microphysics is refused: WRF would diffuse that package's
-    nonprecipitating scalars and this run would omit those tendencies.
+    ``scalar_diffusion_exchange`` names each producer.  The solve carries
+    each microphysics' own diffused scalars (:data:`SCALAR_PBLMIX_SPECIES`);
+    only a scheme with no row there is refused, since WRF would diffuse
+    scalars this run does not know it carries.  Until U-E4 every scheme but
+    mp=28 was refused here, which refused every microphysics choice on the
+    HRRR suite.
 
     Shared with plan review (gpuwm.physics_registry), which calls it on the
     resolved settings so a plan is not offered that this refuses.
@@ -2233,13 +2267,13 @@ def validate_scalar_pblmix_consumer(cfg) -> None:
             f"scalar_pblmix=1 with bl_pbl_physics={cfg.bl_pbl_physics}: the "
             "registry declares no EXCH_H producer row for that scheme; "
             "running it would omit the requested vertical-mixing tendencies.")
-    if row["writes_exch_h"] and cfg.mp_physics != 28:
+    if row["writes_exch_h"] and int(cfg.mp_physics) not in SCALAR_PBLMIX_SPECIES:
         raise UnsupportedConfiguration(
             f"scalar_pblmix=1 with mp_physics={cfg.mp_physics}: WRF diff4d "
             "would mix that package's nonprecipitating scalars on the PBL "
-            "scheme's exch_h, and the implemented coupling carries only the "
-            "mp=28 Thompson aerosol scalar fields nc/ni/nwfa/nifa; other "
-            "pairs would omit the requested vertical-mixing tendencies.")
+            "scheme's exch_h, and gpuwm.config.SCALAR_PBLMIX_SPECIES has no "
+            "row naming them for this scheme, so the run would omit those "
+            "vertical-mixing tendencies.")
 
 
 def validate_mynn_generation_spp(cfg) -> None:
@@ -7226,18 +7260,12 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             "bl_mynn_gsd41_unsquared_qtke must be true or false: it picks "
             "one of two TKE conversions inside the gsd_41 mixing length, "
             "and a non-boolean value names neither.")
-    if (cfg.bl_mynn_version == "gsd_41" and cfg.bl_pbl_physics == 5
-            and cfg.icloud == 1 and cfg.icloud_bl > 0 and radiation_enabled(cfg)
-            and (radiation_scheme_ids(cfg) != (4, 4)
-                 or cfg.ra_rrtmg_variant != RRTMG_VARIANT_LEGACY)):
-        raise ConfigurationRefused(
-            "bl_mynn_version='gsd_41' hands radiation in-cloud QC_BL, and "
-            "only the legacy WRF RRTMG pair (ra_physics=4, ra_rrtmg_variant="
-            f"'{RRTMG_VARIANT_LEGACY}') carries its merge (QC_BL times "
-            "CLDFRA_BL where no resolved cloud is present); the other "
-            "radiation couplings add QC_BL as a grid mean and would make "
-            "every subgrid cloud 1/CLDFRA_BL times too thick.  Select that "
-            "pair, or bl_mynn_version='wrf_461'.")
+    # bl_mynn_version='gsd_41' hands radiation in-cloud QC_BL.  Every
+    # radiation coupling merges it as that generation does (QC_BL times
+    # CLDFRA_BL where no resolved cloud is present,
+    # gpuwm.core.mynn_radiation.merge_mynn_bl_clouds), so no radiation pair
+    # is refused for it any more (U-E4; the legacy-RRTMG-only refusal that
+    # stood here is retired with the merge).
     if cfg.bl_mynn_version == "gsd_41" and mynn_mixscalars_active(cfg):
         raise ConfigurationRefused(
             "bl_mynn_version='gsd_41' with bl_mynn_mixscalars=1: the scalar "

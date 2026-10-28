@@ -14,9 +14,10 @@ had, when the lease grants the one card this server was started on.  Any other c
 the ordinary child process.  ``gpuwm/wrfinput_forecast.py`` is not changed, so the preparation receipt (which
 binds that adapter's source bytes) and every checkpoint identity stay the same as the child path's.
 
-The CUDA context, compiled kernels, imported modules and the history writer stay warm between legs; device
-memory pools are handed back after every leg so the next leg's admission measures the card as the child path
-would.  A leg that fails (any non-zero status or exception) ends the server after its reply, so the next leg
+The CUDA context, compiled kernels, imported modules and the history writer stay warm between legs; the device
+memory pool is handed back after every leg so the next leg's admission measures the card as the child path
+would.  CuPy's pinned host pool (the checkpoint slab) stays for the next leg within ``GPUWM_LEG_SERVER_PINNED_GIB``
+while the host keeps a quarter of its memory available (:func:`_keep_pinned`).  A leg that fails (any non-zero status or exception) ends the server after its reply, so the next leg
 starts in a fresh process: a failed leg never leaves state behind for another member.
 
 Protocol (one JSON object per line):
@@ -100,14 +101,62 @@ class _InProcessWorker:
         return subprocess.CompletedProcess(command, rc)
 
 
-def _release_device_memory():
-    """Hand freed device and pinned blocks back, so the next leg's admission sees the card's real free memory."""
+#: Pinned host memory a server keeps between legs, in GiB (``GPUWM_LEG_SERVER_PINNED_GIB``; 0 frees it after
+#: every leg as before).  Breakage it prevents (single-core law, 2026-10-27, 5 km DA member legs): freeing CuPy's
+#: pinned pool after every leg unpinned the checkpoint slab (2.5-3.5 GB, ~1 s on one core) and the next leg pinned
+#: it again (0.9-2.4 s on one core) while the card waited; a server's legs share one grid, so the slab is reused.
+PINNED_KEEP_GIB_DEFAULT = 8.0
+#: The pool is kept only while the host keeps at least this share of its memory available.
+PINNED_KEEP_AVAILABLE_SHARE = 0.25
+
+
+def _meminfo_bytes(path, keys):
+    """``{key: bytes}`` of the ``kB`` lines ``keys`` in a /proc status file, or None where it cannot be read."""
+    try:
+        with open(path, encoding="ascii") as stream:
+            found = {}
+            for line in stream:
+                name, _, rest = line.partition(":")
+                if name in keys:
+                    found[name] = int(rest.split()[0]) * 1024
+        return found if set(found) == set(keys) else None
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _shmem_bytes():
+    """This process's shared resident memory: where CUDA's pinned host allocations show (Linux), else None."""
+    found = _meminfo_bytes("/proc/self/status", ("RssShmem",))
+    return None if found is None else found["RssShmem"]
+
+
+def _keep_pinned(baseline):
+    """Whether the pinned pool may stay: its measured size under the cap, and the host not short of memory."""
+    try:
+        cap = float(os.environ.get("GPUWM_LEG_SERVER_PINNED_GIB", PINNED_KEEP_GIB_DEFAULT)) * (1 << 30)
+    except ValueError:
+        cap = PINNED_KEEP_GIB_DEFAULT * (1 << 30)
+    now = _shmem_bytes()
+    host = _meminfo_bytes("/proc/meminfo", ("MemTotal", "MemAvailable"))
+    if cap <= 0 or baseline is None or now is None or host is None:
+        return False
+    return (now - baseline <= cap
+            and host["MemAvailable"] >= PINNED_KEEP_AVAILABLE_SHARE * host["MemTotal"])
+
+
+def _release_device_memory(pinned_baseline=None):
+    """Hand freed device blocks back, so the next leg's admission sees the card's real free memory.
+
+    Pinned host blocks stay in CuPy's pool for the next leg while :func:`_keep_pinned` allows; device
+    memory is always handed back (the next leg's admission measures the card).
+    """
     import gc
     gc.collect()
     try:
         import cupy
         cupy.get_default_memory_pool().free_all_blocks()
-        cupy.get_default_pinned_memory_pool().free_all_blocks()
+        if not _keep_pinned(pinned_baseline):
+            cupy.get_default_pinned_memory_pool().free_all_blocks()
     except Exception:
         pass
 
@@ -155,6 +204,7 @@ def serve(requests, replies):
     worker = _InProcessWorker()
     subprocess.run = worker.run
     legs = 0
+    pinned_baseline = _shmem_bytes()
     replies.write(json.dumps({"ready": True, "protocol": PROTOCOL, "pid": os.getpid()}) + "\n")
     replies.flush()
     for line in requests:
@@ -167,7 +217,7 @@ def serve(requests, replies):
         legs += 1
         exiting = rc != 0
         if not exiting:
-            _release_device_memory()
+            _release_device_memory(pinned_baseline)
         replies.write(json.dumps({"rc": rc, "wall_seconds": round(time.perf_counter() - t0, 3), "legs": legs,
                                   "in_process": worker.used, "exiting": exiting}) + "\n")
         replies.flush()

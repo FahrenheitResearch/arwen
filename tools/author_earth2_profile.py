@@ -52,6 +52,13 @@ _REQUIRED = [
     ("soil_temperature", "soil", "soil", "K"),
     ("volumetric_soil_moisture", "soil", "soil", "m3 m-3"),
 ]
+# Earth2Studio's lexicons carry one field under more than one key (HRRRLexicon: "msl" and the deprecated "mslp"), and a
+# model package's own metadata picks one of them: nvidia/stormcast-v1-era5-hrrr's metadata.zarr names "mslp" where the
+# ERA5-lineage models write "msl". Breakage it prevents: WOOF run_025e9dd2419ae75e (2026-10-26) ran StormCast and then
+# stopped in prep at "mapped field(s) ['air_pressure_at_mean_sea_level'] have no matching variable in any of the 2
+# supplied NetCDF file(s)" because the mapping accepted only "msl". Each selector accepts every key of its field.
+_PRODUCER_ALIASES = {"msl": ("msl", "mslp")}
+
 _TARGET_UNITS = {
     "geopotential_height": "m", "air_temperature": "K", "eastward_wind": "m s-1",
     "northward_wind": "m s-1", "specific_humidity": "kg kg-1",
@@ -160,9 +167,11 @@ def profile_mapping(table, profile_id):
             "staggering": "none", "missing": {"kind": "reject"},
         }
     for variable, canonical in profile["surface"].items():
-        producer[variable] = {"units": units[variable]}
+        names = list(_PRODUCER_ALIASES.get(variable, (variable,)))
+        for name in names:
+            producer[name] = {"units": units[variable]}
         fields[canonical] = {
-            "selectors": [{"format": "netcdf", "name": [variable]}],
+            "selectors": [{"format": "netcdf", "name": names}],
             "units": {"source": units[variable], "target": _TARGET_UNITS[canonical]},
             "source_axes": ["time", "lead", "y", "x"], "target_axes": ["y", "x"],
             "location": "surface", "staggering": "none", "missing": {"kind": "reject"},

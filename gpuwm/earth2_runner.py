@@ -84,6 +84,7 @@ def member_perturbation(model, policy, seeds):
     import earth2studio.perturbation as perturbations
     perturb = policy["perturbation"]
     operation = getattr(perturbations, perturb["class"])(**perturb.get("parameters", {}))
+    scaled = scaled_noise(operation, perturb.get("amplitude_scale"))
     active_seeds = []
     native = policy.get("native_rng")
     if native and native.get("state_initializer"):
@@ -127,9 +128,46 @@ def member_perturbation(model, policy, seeds):
                 selection[axis] = slice(index, index + 1)
                 subset = coords.copy()
                 subset["ensemble"] = coords["ensemble"][index:index + 1]
-                x[tuple(selection)], _ = operation(x[tuple(selection)], subset)
+                x[tuple(selection)], _ = scaled(x[tuple(selection)], subset)
             return x, coords
-        return operation(x, coords)
+        return scaled(x, coords)
+    return apply
+
+
+def scaled_noise(operation, scale):
+    """Give a perturbation's amplitude the units of each channel, from TABLE DATA.
+
+    Earth2Studio's SphericalGaussian adds ``noise_amplitude`` times a unit
+    random field in PHYSICAL units, the same number on every channel. With
+    ``amplitude_scale: "channel_spatial_std"`` the amplitude is multiplied by
+    each channel's spatial standard deviation in the state being perturbed, so
+    0.001 means a thousandth of that field's own variability on every channel.
+    Breakage it prevents: SFNO's single member (seed 333) got +-0.001 kg/kg on
+    q50, 878 times that channel's normalisation std, and forecast 10-18 m/s
+    winds at Kansas City from a 2.7 m/s calm by +6 h (WOOF run_e6a68e7fcc4ed58f;
+    the same state unperturbed gives 3.1 m/s against GFS's 4.4 m/s).
+    """
+    if scale is None:
+        return operation
+    if scale != "channel_spatial_std":
+        raise ValueError(f"unknown perturbation amplitude_scale {scale!r}")
+    import torch
+    base = operation.noise_amplitude
+
+    def apply(x, coords):
+        # Spatial axes are the last two, the layout SphericalGaussian checks.
+        values = x.float()
+        finite = torch.isfinite(values)
+        count = finite.sum(dim=(-2, -1), keepdim=True).clamp(min=1)
+        filled = torch.where(finite, values, torch.zeros_like(values))
+        mean = filled.sum(dim=(-2, -1), keepdim=True) / count
+        spread = torch.where(finite, (values - mean) ** 2, torch.zeros_like(values))
+        spread = (spread.sum(dim=(-2, -1), keepdim=True) / count).sqrt()
+        operation.noise_amplitude = base.to(x.device) * spread.to(x.dtype)
+        try:
+            return operation(x, coords)
+        finally:
+            operation.noise_amplitude = base
     return apply
 
 
@@ -527,16 +565,48 @@ def load_constructed(request, key, audit):
     return model, dict(path=str(model_path), bytes=manifest["bytes"], cache_hit=True)
 
 
+@contextmanager
+def exclusive_lock(handle):
+    """Hold an exclusive whole-file lock on an open lock file until the block ends: flock on POSIX, a one-byte
+    msvcrt lock on Windows.
+
+    Breakage it prevents (public ci cpu windows-2025, 2026-10-25/26): the runner imported fcntl unconditionally, so
+    on Windows every cached construction and every loader-input preparation failed with "No module named 'fcntl'".
+    """
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+    if fcntl is not None:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        return
+    import msvcrt
+    handle.seek(0)
+    while True:
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            break
+        except OSError:  # LK_LOCK gives up after 10 s; keep waiting like flock does
+            continue
+    try:
+        yield
+    finally:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
 def build_constructed(request, loader_inputs, kwargs, workers):
     """CPU-construct the model once per identity and keep it for the GPU run."""
-    import fcntl
     import os
     import torch
     key = constructed_identity(request, loader_inputs, kwargs)
     root, model_path, manifest_path = _constructed_paths(request, key)
     root.mkdir(parents=True, exist_ok=True)
-    with (root / (model_path.stem + ".lock")).open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with (root / (model_path.stem + ".lock")).open("a") as lock, exclusive_lock(lock):
         manifest = _constructed_manifest(request, key)
         if manifest is not None:
             return dict(path=str(model_path), bytes=manifest["bytes"], cache_hit=True,
@@ -574,12 +644,30 @@ def prefetch_initial_conditions(request, input_coords, workers):
     from earth2studio.data import fetch_data
     torch.set_num_threads(workers)
     source = getattr(data, request["ic_class"])(**request.get("ic_kwargs", {}))
-    fetch_data(source=source, time=np.array([np.datetime64(request["init"])]),
-               variable=np.array(input_coords["variable"]),
-               lead_time=np.array(input_coords["lead_time_ns"], dtype="timedelta64[ns]"),
-               device=torch.device("cpu"))
+    tensor, coords = fetch_data(source=source, time=np.array([np.datetime64(request["init"])]),
+                                variable=np.array(input_coords["variable"]),
+                                lead_time=np.array(input_coords["lead_time_ns"], dtype="timedelta64[ns]"),
+                                device=torch.device("cpu"))
+    absent = absent_initial_fields(tensor, coords)
+    if absent:
+        # Breakage it prevents: WOOF owner canary run_b4dfcfa2b3767fb7 (AIFS from the GFS analysis, 2026-10-26): GFS has
+        # no skt, stl1, stl2, swvl1, swvl2 or tcw, the model ran on NaN inputs and every output field was NaN, found
+        # only in preparation as "geopotential_height contains missing/non-finite source values".
+        raise ValueError(f"initial-condition source {type(source).__name__} supplies no {', '.join(absent)} at "
+                         f"{request['init']} (every value missing), and the model needs them as input; start from a "
+                         "source that publishes them")
     return dict(source=type(source).__name__, init=request["init"], cache=request["data_cache"],
                 variables=len(input_coords["variable"]))
+
+
+def absent_initial_fields(tensor, coords) -> list[str]:
+    """Input variables whose values are all missing or non-finite (a field partly missing, such as SST over land,
+    is the source's own mask and stays)."""
+    import torch
+    axis = list(coords).index("variable")
+    values = torch.movedim(tensor, axis, 0).reshape(tensor.shape[axis], -1)
+    finite = torch.isfinite(values).any(dim=1)
+    return [str(name) for name, ok in zip(coords["variable"], finite.tolist()) if not ok]
 
 
 @contextmanager
@@ -589,7 +677,6 @@ def loader_cache_lock(request):
     if not preparations:
         yield
         return
-    import fcntl
     from pathlib import Path
     from earth2studio.models.auto import Package
     roots = sorted({Path(Package.default_cache(item["cache_subdir"])).resolve()
@@ -598,7 +685,7 @@ def loader_cache_lock(request):
         for root in roots:
             root.mkdir(parents=True, exist_ok=True)
             lock = stack.enter_context((root / ".gpuwm-loader-inputs.lock").open("a"))
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            stack.enter_context(exclusive_lock(lock))
         yield
 
 

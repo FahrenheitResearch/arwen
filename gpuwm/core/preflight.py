@@ -7924,20 +7924,25 @@ def mynn_scalar_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     Charge the larger phase, rather than summing nonconcurrent phases.
     The scalar-off estimate is unchanged.
     """
-    from gpuwm.config import scalar_pblmix_exchange, scalar_pblmix_mixes
+    from gpuwm.config import (SCALAR_PBLMIX_SPECIES, scalar_pblmix_exchange,
+                              scalar_pblmix_mixes)
     if int(cfg.scalar_pblmix) != 1 or not scalar_pblmix_mixes(cfg):
         return {}
     nz, columns = int(cfg.nz), int(cfg.ny) * int(cfg.nx)
-    if not scalar_pblmix_exchange(cfg)["mixes_in_scheme"]:
+    if not scalar_pblmix_exchange(cfg)["mixes_in_scheme"] or int(cfg.mp_physics) != 28:
         # The shared post-PBL arm (physics._scalar_pblmix_rates, after YSU,
-        # MYJ, Shin-Hong or UW): four raw rates, four coupled rates and the
-        # mass coefficient live together; each 32768-column chunk adds four
-        # packed inputs, 5*nz+1 work values and two outputs per column.
-        # The YSU key keeps its historical name.
-        chunk = min(32768, columns)
+        # MYJ, Shin-Hong or UW, and after MYNN for every microphysics but
+        # mp=28, whose family MYNN's wrapper solves): one raw rate per
+        # species, its coupled rate and the mass coefficient live together
+        # (N = 4 under mp=28 gives the historical 9); each 32768-column
+        # chunk adds four packed inputs, 5*nz+1 work values and two outputs
+        # per column.  A scheme with no diffused scalar keeps only the mass
+        # coefficient.  The YSU key keeps its historical name.
+        species = len(SCALAR_PBLMIX_SPECIES.get(int(cfg.mp_physics), ()))
+        chunk = min(32768, columns) if species else 0
         key = ("ysu_scalar/local_diffusion_peak" if int(cfg.bl_pbl_physics) == 1
                else "pbl_scalar/local_diffusion_peak")
-        return {key: (9 * nz * columns + (11 * nz + 1) * chunk,)}
+        return {key: ((2 * species + 1) * nz * columns + (11 * nz + 1) * chunk,)}
     chunk = mynn_pbl_column_chunk(cfg)
     solve = 8 * nz * columns + (8 * nz + 2) * chunk + 1
     coupling = 13 * nz * columns

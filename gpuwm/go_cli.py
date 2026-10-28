@@ -873,6 +873,11 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         # The one host the fetch pins, None to walk the source's ladder,
         # and which statement named it: --transport wins over the table.
         "transport": pinned,
+        # [fetch] mode: the byte transport of the run's own fetch.  Absent
+        # keeps the fetch default; 'idx-subset' lets a run whose source
+        # folder was fetched as a subset top it up as a subset instead of
+        # downloading whole files again.
+        "fetch_mode": fetch_table.get("mode"),
         "transport_from": pinned_from,
         "transport_table": fetch_table.get("transport"),
         # How the fetch stage waits for its source (DESIGN A136 3.2): the
@@ -1178,6 +1183,8 @@ def fetch_command(plan: dict) -> list[str]:
         command.append("--all-levels")
     if plan.get("transport") is not None:
         command.extend(("--transport", str(plan["transport"])))
+    if plan.get("fetch_mode") is not None:
+        command.extend(("--mode", str(plan["fetch_mode"])))
     from gpuwm import fetch_endpoints
     from gpuwm.fetch import GFS_CONTAINER_SOURCES
     if (fetch_endpoints.policy_uses_aws(plan["source"])
@@ -4677,8 +4684,6 @@ def _checkpoint_run_bindings(args, config: Path) -> Path | None:
     ``None`` and the run plan's own checks speak, unchanged.
     """
 
-    import hashlib
-
     restart = getattr(args, "restart", None)
     if restart is None:
         return None
@@ -4686,6 +4691,125 @@ def _checkpoint_run_bindings(args, config: Path) -> Path | None:
     if checkpoint.parent.name != _RUN_FOLDER_CHECKPOINTS:
         return None
     folder = checkpoint.parent.parent
+    bound = _run_folder_authority(folder)
+    if bound is None:
+        return None
+    if not bound["intact"]:
+        # Breakage it prevents: resuming against authority files edited
+        # after the run would bind the checkpoint to a configuration it was
+        # not written under.  The restore's manifest check refuses the same
+        # thing; this names the folder.
+        raise GoRefusal(
+            f"--restart {checkpoint.name} was written by the run in {folder}, "
+            f"and that run's {_RUN_FOLDER_AUTHORITY}/ files no longer match "
+            "the digests its authority receipt recorded, so the checkpoint "
+            "cannot be bound to the configuration it was written under. "
+            "Next: start a fresh run.")
+    launched = _file_sha256(Path(config))
+    if launched not in bound["accepts"]:
+        # Breakage it prevents: a checkpoint resumed under a different
+        # configuration than the one that wrote it.
+        base = bound["base"]
+        raise GoRefusal(
+            f"--restart {checkpoint.name} was written by the run in {folder}, "
+            f"which ran {base.get('path')} (sha256 {base.get('sha256')}); "
+            f"{config} is not that configuration (sha256 {launched}): it was "
+            "edited since, or it is another one. Next: resume with the "
+            "configuration that wrote the checkpoint, or start a fresh run.")
+    prepared = bound["prepared"]
+    explicit_root = getattr(args, "prepared_root", None)
+    if explicit_root is not None and Path(explicit_root).resolve() != prepared.resolve():
+        return None
+    if explicit_root is None:
+        args.prepared_root = prepared
+    if getattr(args, "wps_namelist", None) is None:
+        args.wps_namelist = bound["wps_namelist"]
+    return bound["experiment_config"]
+
+
+def _prepared_run_bindings(args, config: Path) -> Path | None:
+    """The bindings of the run folder whose bundle ``--prepared-root`` names.
+
+    The two-step front door, ``gpuwm go dom.toml --prepare-only`` and then
+    ``gpuwm go dom.toml --prepared-root <run>/prepared``, met the same
+    binding :func:`_checkpoint_run_bindings` resolves for ``--restart``:
+    the preparation bound its bundle to the authority stage's GENERATED
+    experiment config (``<run>/authority/experiment.toml``, the launched
+    config normalised: tables re-keyed, the resolved physics profile
+    written in), so the second step, handed the user's own config, was
+    refused "supplied experiment_config differs from the portable source
+    manifest".  Breakage this closes: every 12 km GFS parent the ml-probs
+    T1 queue prepared (10 dates, Vast V8X, 2026-10-27) was refused at its
+    forecast launch, some after a 13 minute wait for a card, and only
+    passing the generated config by hand ran them.
+
+    When ``--prepared-root`` is a go run folder's ``prepared/`` and
+    ``config`` is the configuration that folder's authority stage ran (or
+    its generated copy), the generated config is returned for the run
+    plan and a missing ``--wps-namelist`` is filled with the generated
+    namelist.  An explicit ``--wps-namelist`` is kept as given.  Anything
+    else returns ``None`` and the run plan's own checks speak, unchanged.
+    """
+
+    explicit_root = getattr(args, "prepared_root", None)
+    if explicit_root is None:
+        return None
+    prepared = Path(explicit_root).resolve()
+    if prepared.name != _RUN_FOLDER_PREPARED:
+        return None
+    folder = prepared.parent
+    bound = _run_folder_authority(folder)
+    if bound is None:
+        return None
+    if not bound["intact"]:
+        # Breakage it prevents: a forecast bound to authority files edited
+        # after the preparation would run a configuration the bundle was
+        # not prepared for.  The runner's manifest check refuses the same
+        # thing; this names the folder.
+        raise GoRefusal(
+            f"--prepared-root {prepared} was prepared by the run in {folder}, "
+            f"and that run's {_RUN_FOLDER_AUTHORITY}/ files no longer match "
+            "the digests its authority receipt recorded, so the bundle "
+            "cannot be bound to the configuration it was prepared for. "
+            "Next: prepare again with --prepare-only.")
+    launched = _file_sha256(Path(config))
+    if launched not in bound["accepts"]:
+        # Breakage it prevents: a bundle forecast under a different
+        # configuration than the one it was prepared for.  The runner
+        # refuses that too, but in words that name neither file.
+        base = bound["base"]
+        raise GoRefusal(
+            f"--prepared-root {prepared} was prepared from {base.get('path')} "
+            f"(sha256 {base.get('sha256')}); {config} is not that "
+            f"configuration (sha256 {launched}): it was edited since, or it "
+            "is another one. Next: launch with the configuration that "
+            "prepared the bundle, or prepare this one with --prepare-only.")
+    if getattr(args, "wps_namelist", None) is None:
+        args.wps_namelist = bound["wps_namelist"]
+    return bound["experiment_config"]
+
+
+def _file_sha256(path: Path) -> str | None:
+    import hashlib
+
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _run_folder_authority(folder: Path) -> dict | None:
+    """What a ``gpuwm go`` run folder's prepared bundle is bound to, or None.
+
+    Read off ``<folder>/authority/authority-receipt.json`` beside
+    ``<folder>/prepared/``: the generated experiment config and WPS
+    namelist the bundle binds, the configuration they were generated
+    from, the config digests that name this run's configuration
+    (``accepts``) and whether the generated files still carry the digests
+    the receipt recorded (``intact``).  ``None`` when the folder is not
+    such a run folder.
+    """
+
     authority = folder / _RUN_FOLDER_AUTHORITY
     prepared = folder / _RUN_FOLDER_PREPARED
     receipt_path = authority / "authority-receipt.json"
@@ -4697,50 +4821,23 @@ def _checkpoint_run_bindings(args, config: Path) -> Path | None:
         generated = receipt["generated"]
         generated_config = Path(generated["experiment_config"]["path"])
         generated_wps = Path(generated["wps_namelist"]["path"])
+        generated_sha = generated["experiment_config"]["sha256"]
+        generated_wps_sha = generated["wps_namelist"]["sha256"]
     except (OSError, ValueError, KeyError, TypeError):
         return None
     # The receipt was written in place; a moved folder still holds the
     # same two files beside it.
     generated_config = authority / generated_config.name
     generated_wps = authority / generated_wps.name
-
-    def digest(path: Path) -> str | None:
-        try:
-            return hashlib.sha256(path.read_bytes()).hexdigest()
-        except OSError:
-            return None
-
-    if (digest(generated_config) != generated["experiment_config"]["sha256"]
-            or digest(generated_wps) != generated["wps_namelist"]["sha256"]):
-        # Breakage it prevents: resuming against authority files edited
-        # after the run would bind the checkpoint to a configuration it was
-        # not written under.  The restore's manifest check refuses the same
-        # thing; this names the folder.
-        raise GoRefusal(
-            f"--restart {checkpoint.name} was written by the run in {folder}, "
-            f"and that run's {_RUN_FOLDER_AUTHORITY}/ files no longer match "
-            "the digests its authority receipt recorded, so the checkpoint "
-            "cannot be bound to the configuration it was written under. "
-            "Next: start a fresh run.")
-    launched = digest(Path(config))
-    if launched not in {base.get("sha256"),
-                        generated["experiment_config"]["sha256"]}:
-        # Breakage it prevents: a checkpoint resumed under a different
-        # configuration than the one that wrote it.
-        raise GoRefusal(
-            f"--restart {checkpoint.name} was written by the run in {folder}, "
-            f"which ran {base.get('path')} (sha256 {base.get('sha256')}); "
-            f"{config} is not that configuration (sha256 {launched}): it was "
-            "edited since, or it is another one. Next: resume with the "
-            "configuration that wrote the checkpoint, or start a fresh run.")
-    explicit_root = getattr(args, "prepared_root", None)
-    if explicit_root is not None and Path(explicit_root).resolve() != prepared.resolve():
-        return None
-    if explicit_root is None:
-        args.prepared_root = prepared
-    if getattr(args, "wps_namelist", None) is None:
-        args.wps_namelist = generated_wps
-    return generated_config
+    return {
+        "prepared": prepared,
+        "base": base,
+        "experiment_config": generated_config,
+        "wps_namelist": generated_wps,
+        "accepts": {base.get("sha256"), generated_sha},
+        "intact": (_file_sha256(generated_config) == generated_sha
+                   and _file_sha256(generated_wps) == generated_wps_sha),
+    }
 
 
 def _registered_launch(args, *, config: Path, payload: dict,
@@ -4748,8 +4845,9 @@ def _registered_launch(args, *, config: Path, payload: dict,
     """Adapt the human command to the existing executable run-plan contract.
 
     ``plan_config`` is the experiment config the run plan binds when it is
-    not the launched one: a resumed run folder's generated config
-    (:func:`_checkpoint_run_bindings`).  Output placement still follows
+    not the launched one: a resumed or prepared run folder's generated
+    config (:func:`_checkpoint_run_bindings`,
+    :func:`_prepared_run_bindings`).  Output placement still follows
     the launched ``config``.
     """
     import contextlib
@@ -4829,6 +4927,15 @@ def _registered_launch(args, *, config: Path, payload: dict,
         options["initial_inputs"] = str(Path(args.initial_inputs).resolve())
     if getattr(args, "grib2", False):
         options["grib2"] = True
+    if os.environ.get("GPUWM_VERIFY_VISUALS", "1").lower() in ("0", "false", "off"):
+        # --no-verify-visuals (or GPUWM_VERIFY_VISUALS=0; go's own scope has
+        # set the variable from the flag by now) must reach the plan:
+        # run-plan opens its own verification_scope from run_options, whose
+        # default is on.  Breakage it prevents: the flag was overridden inside
+        # the run, so the post-run verification worker still ran and held the
+        # forecast's card lease ~2 min after every forecast (Vast V8X
+        # 2026-10-27, `gpuwm go ... --prepared-root ... --no-verify-visuals`).
+        options["verify_visuals"] = False
     from gpuwm.ensemble.runtime_context import current_session
     ensemble_session = current_session()
     if ensemble_session is not None:
@@ -5574,8 +5681,14 @@ def _local_input_readiness(hints: dict) -> tuple[dict, int] | None:
 def _prepared_readiness(args, *, config: Path, payload: dict) -> int:
     from gpuwm import stage_cli, source_readiness as readiness
 
+    # The bundle is asked about under the configuration it binds: a go
+    # run folder's generated config when the launched one is what that
+    # folder ran (the same binding the launch itself makes).
+    bound = (_checkpoint_run_bindings(args, config)
+             or _prepared_run_bindings(args, config))
     document, code = stage_cli.readiness_for_bundle(Path(args.prepared_root),
-        experiment_config=config, wps_namelist=getattr(args, "wps_namelist", None),
+        experiment_config=bound or config,
+        wps_namelist=getattr(args, "wps_namelist", None),
         physics_profile=getattr(args, "physics_profile", None),
         restart=getattr(args, "restart", None), devices=getattr(args, "devices", None))
     readiness.print_document(document)
@@ -5603,10 +5716,17 @@ def _go_readiness(payload: dict, options: dict, pinned: str | None, *,
 #: (process, its log handle, started).  Joined before the forecast stage.
 _KERNEL_PREWARM: dict = {}
 
-#: How long the forecast stage waits for the pre-warm after the preparation
-#: (it is normally done already); past this the forecast starts and shares
-#: the compiles through the caches' own locks.
-_KERNEL_PREWARM_WAIT_S = 300.0
+#: How long the forecast stage waits for the pre-warm after the preparation.
+#: A healthy child is done by then (2-29 s from its spawn on cold RTX PRO 6000
+#: boxes, and it starts before the fetch); the forecast compiles its own plan
+#: on every core anyway (kernel_prewarm.start_plan in each prepared runner).
+#: THE BREAKAGE (WOOF customer-shape gates 2026-10-26, gpuwm 2.9.7 image
+#: b9f2d801): a child that printed nothing after its first line held the
+#: forecast for the old 300 s bound on two cold boxes (gfs-regional-3km
+#: run_7598e0f80ef30547, ecmwf-regional-12-3 run_9b996f4a5cad6e89); the
+#: forecast then ran in 8.8 s and 22 s.  Past this bound the child's stacks
+#: go to kernel-prewarm.log and its process group is stopped.
+_KERNEL_PREWARM_WAIT_S = 30.0
 
 
 def _kernel_prewarm_status(plan, status, reason=None, **attrs):
@@ -5653,8 +5773,12 @@ def _join_kernel_prewarm(plan: dict) -> None:
         try:
             code = process.wait(timeout=_KERNEL_PREWARM_WAIT_S)
         except subprocess.TimeoutExpired:
-            _kernel_prewarm_status(plan, "still running",
-                                   "wait timed out; forecast shares the compile cache")
+            _stop_kernel_prewarm(process)
+            _kernel_prewarm_status(plan, "stopped",
+                                   f"no result {_KERNEL_PREWARM_WAIT_S:.0f} s into the forecast stage "
+                                   f"({time.monotonic() - started:.0f} s in all); its stacks are in "
+                                   "kernel-prewarm.log and the forecast compiles its plan on every core",
+                                   wall_seconds=time.monotonic() - started)
             return
         _kernel_prewarm_status(plan, "finished" if code in (0, None) else "failed",
                                None if code in (0, None) else f"child exited {code}; see kernel-prewarm.log",
@@ -5667,6 +5791,41 @@ def _join_kernel_prewarm(plan: dict) -> None:
             log.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+def _stop_kernel_prewarm(process) -> None:
+    """Dump a late pre-warm child's Python stacks into its log, then stop its process group.
+
+    SIGUSR1 reaches the child's faulthandler (kernel_prewarm.main registers it) and
+    ends its compiler workers; SIGTERM, then SIGKILL, ends the rest.  The child was
+    spawned in its own session, so the group is exactly the child and its workers.
+    A child holding a cache entry lock or a CUDA context must not outlive the wait.
+    Never raises: the forecast starts whatever happens here.
+    """
+    import signal
+
+    pid = getattr(process, "pid", None)
+    try:
+        if os.name == "posix" and pid:
+            try:
+                os.killpg(pid, signal.SIGUSR1)
+                process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                pass
+            for sig, grace in ((signal.SIGTERM, 3.0), (signal.SIGKILL, 3.0)):
+                try:
+                    os.killpg(pid, sig)
+                except ProcessLookupError:
+                    break
+                try:
+                    process.wait(timeout=grace)
+                except subprocess.TimeoutExpired:
+                    continue
+        else:
+            process.kill()
+            process.wait(timeout=3.0)
+    except Exception:  # noqa: BLE001 - stopping an optional warm-up never fails the run
+        pass
 
 
 class SpeedHooks:
@@ -5729,7 +5888,10 @@ class SpeedHooks:
             log = open(Path(plan["root"]) / "kernel-prewarm.log", "w", encoding="utf-8")
             process = subprocess.Popen(
                 [sys.executable, "-m", "gpuwm.kernel_prewarm", str(config), *_profile_flags(plan)],
-                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                # Its own process group, so a late child and its compiler workers
+                # stop together (_stop_kernel_prewarm).
+                **({"start_new_session": True} if os.name == "posix" else {}))
             _KERNEL_PREWARM[str(plan["root"])] = (process, log, time.monotonic())
             _kernel_prewarm_status(plan, "started", child_pid=getattr(process, "pid", None))
         except Exception as error:  # noqa: BLE001 - report optional warm-up failures
@@ -6299,7 +6461,8 @@ def _go_launch(args, *, observer=None) -> int:
         # or --prepared-root, because that branch sat above this one.
         return _prepare_only_launch(args, config=config, payload=payload,
                                     observer=observer)
-    resumed_config = _checkpoint_run_bindings(args, config)
+    resumed_config = (_checkpoint_run_bindings(args, config)
+                      or _prepared_run_bindings(args, config))
     if ("case_data" in payload or getattr(args, "prepared_root", None) is not None
             or getattr(args, "restart", None) is not None
             or getattr(args, "wps_namelist", None) is not None):

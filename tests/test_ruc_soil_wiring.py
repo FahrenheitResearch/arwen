@@ -384,12 +384,25 @@ def test_noah_and_noahmp_soil_is_bitwise_what_it_was(scheme, source) -> None:
     fields = _SOURCES[source]()
     soil_type = _soil_type(fields["LANDSEA"].shape)
 
-    reference = preprocess_noah_soil(fields, soil_type=soil_type)
+    # The seam's one change for a Noah geometry is the land-state remap of
+    # the SOURCE moisture (gpuwm/ingest/land_state.py): a foreign soil
+    # model's moisture (ERA5's HTESSEL, HRRR's RUC) is index-remapped onto
+    # Noah's hydraulics first, a Noah source (GFS) is passed as is.  After
+    # that it is preprocess_noah_soil itself, byte for byte.
+    from gpuwm.ingest.land_state import convert_source_soil_moisture
+
+    converted, receipt = convert_source_soil_moisture(
+        fields, sf_surface_physics=scheme, soil_type=soil_type)
+    assert (converted is fields) == (source == "gfs"), receipt
+    reference = preprocess_noah_soil(converted, soil_type=soil_type)
     through_seam = preprocess_land_surface_soil(
         fields, sf_surface_physics=scheme, soil_type=soil_type)
 
     assert type(through_seam) is type(reference) is NoahSoilState
+    assert through_seam.land_state == receipt
     for name in NoahSoilState.__dataclass_fields__:
+        if name == "land_state":
+            continue
         raw_want = getattr(reference, name)
         raw_got = getattr(through_seam, name)
         if isinstance(raw_want, Mapping) or isinstance(raw_got, Mapping):

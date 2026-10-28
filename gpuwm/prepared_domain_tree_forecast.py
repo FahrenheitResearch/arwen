@@ -1007,15 +1007,31 @@ def _external_door_streams(exp, initialization, refusal):
         return None
     held = sum(int(refusal.terms.get(name, 0)) for name in (
         "model state", "physics", "lateral boundary tables"))
-    budget = int(refusal.free_bytes) - held
+    # WHAT THE DOOR ITSELF PUTS ON THE CARD beside that state once the tree
+    # is restored (the analysis door's IAU forcing and dry-mass increment,
+    # gpuwm.da.analysis_door.AnalysisInitialization.device_terms) is held
+    # through the steps too, and is allocated after this plan is made.  Left
+    # out, the tiles were planned in memory that was already spent:
+    # camp-us-20230710-r n5q15 10:00 mem003 at 13.10 GiB free planned
+    # 147x146 x12 tiles in 9.30 GiB and ran out of card memory on its first
+    # step beside the door's 0.71 GiB.
+    door_terms = getattr(initialization, "device_terms", None)
+    door_terms = ({str(name): int(value) for name, value in dict(door_terms()).items() if int(value)}
+                  if callable(door_terms) else {})
+    door_held = sum(door_terms.values())
+    budget = int(refusal.free_bytes) - held - door_held
     if budget <= 0:
         return None
+    beside = ("" if not door_terms else
+              f", and {door_held / 2**30:.2f} GiB the door holds beside it: "
+              + ", ".join(f"{name} {value / 2**30:.2f} GiB"
+                          for name, value in door_terms.items()))
     print(f"prepared tree: the resident forecast does not fit this card "
           f"({int(refusal.need_bytes) / 2**30:.2f} GiB envelope against "
           f"{int(refusal.free_bytes) / 2**30:.2f} GiB free), so it streams "
           "through host memory: [tiles] mode = 'auto' (identical output), "
           f"tiles within the {budget / 2**30:.2f} GiB the restored domain "
-          f"leaves ({held / 2**30:.2f} GiB held)", flush=True)
+          f"leaves ({held / 2**30:.2f} GiB held{beside})", flush=True)
     return replace(exp, tiles=streaming.StreamingOptions(
         mode="auto", vram_budget_bytes=budget))
 
@@ -4349,14 +4365,14 @@ def run_prepared_tree(
             pending.abandon()
             raise
 
-        def publish():
+        def publish(retire=True):
             try:
                 if writers is not None:
                     if history_durable is None:
                         writers.drain()
                     else:
                         history_durable()
-                path = pending.publish()
+                path = pending.publish(retire=retire)
                 step_log.restart_written(
                     domain=exp.root.grid_id, valid_time=valid, path=path,
                     wall_seconds=time.perf_counter() - restart_started)
@@ -4366,7 +4382,11 @@ def run_prepared_tree(
 
         if pending.deferrable and (writers is None or history_durable is not None):
             try:
-                checkpoint_publisher.submit(publish)
+                # Superseded sets are retired on this thread at the next
+                # wait (see prepared_single._CheckpointPublisher).
+                checkpoint_publisher.submit(
+                    lambda: publish(retire=False),
+                    then=pending.retire_superseded)
             except BaseException:
                 pending.abandon()
                 raise

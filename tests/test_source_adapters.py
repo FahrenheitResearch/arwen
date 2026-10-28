@@ -1851,6 +1851,43 @@ def test_cli_hrrr_accepts_64_decoder_hour_workers(capsys):
     assert "--pipeline-workers 64" in capsys.readouterr().out
 
 
+def test_cli_hrrr_relays_no_stock_wrf_export_to_both_preparers(capsys):
+    """U-E6: `gpuwm prep --source hrrr --no-stock-wrf-export` reaches the
+    preparer instead of being refused as an ERA5-only flag.
+
+    The single-domain preparer's requested export is fail-closed, so a
+    door that refused the opt-out left an HRRR-recipe preparation whose
+    export cannot be written no way to finish (an ERA5 downscale lane,
+    2026-10-26).  It is spelled
+    --skip-stock-wrf-export there and --no-stock-wrf-export on the
+    hierarchy stage, which turns it into the "off" export mode.
+    """
+    from gpuwm import hrrr_hierarchy_direct
+
+    result = main([*_hrrr_args(), "--no-stock-wrf-export", "--dry-run"])
+    captured = capsys.readouterr()
+    assert result == 0, captured.err
+    assert "is not used by --source hrrr" not in captured.err
+    assert "--skip-stock-wrf-export" in captured.out
+
+    args = gpuwm.source_cli._parser().parse_args([
+        "--source", "hrrr", "--root-preparation", "/root",
+        "--domain-spec", "/case/d01.json", "--wps-namelist", "/case/w",
+        "--namelist-input", "/case/n", "--stock-wrf-namelist-input",
+        "/case/s", "--geog-root", "/geog", "--source-sha256s", "/m",
+        "--source-sha256s-sha256", "abc", "--valid-time",
+        "2026-07-18_00:00:00", "--output-root", "/out",
+        "--no-stock-wrf-export"])
+    command = gpuwm.source_cli._hrrr_command(args)
+    assert command[2] == "gpuwm.hrrr_hierarchy_direct"
+    parsed = hrrr_hierarchy_direct._parser().parse_args(command[3:])
+    assert parsed.stock_wrf_export == "off"
+    args.no_stock_wrf_export = False
+    parsed = hrrr_hierarchy_direct._parser().parse_args(
+        gpuwm.source_cli._hrrr_command(args)[3:])
+    assert parsed.stock_wrf_export == "optional"
+
+
 def test_cli_hrrr_refuses_era5_only_arguments(capsys):
     result = main(
         [

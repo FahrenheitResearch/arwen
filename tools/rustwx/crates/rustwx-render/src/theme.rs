@@ -71,6 +71,10 @@
 //! and are what a companion chart style reads, so one file names the type
 //! for every surface.
 //!
+//! `colormaps.levels` maps product names to explicit, strictly increasing
+//! physical boundaries in displayed units. It preserves the palette and leaves
+//! unnamed products unchanged. Use it for a common range across a sequence.
+//!
 //! `colormaps.products` keys are the field product names the renderer sees
 //! (the recipe slug for direct and derived products); `sequential` replaces
 //! the auto-ranged ramp the generic `var:` plane lane invents; `diverging`
@@ -96,6 +100,11 @@
 //! and its source; a caller who wants another name extends one of them in
 //! its own file (`{"extends": "woof-light", "text": {...}}`) or edits the
 //! table.
+//!
+//! `woof-light-tc` is woof-light with the `tc` sheet's tables (its wind and
+//! IR ladders and its MSLP isobars) laid over it: the look WOOF draws a
+//! tropical cyclone run's maps with.  It is composed from the two tables,
+//! not written out a third time.
 
 use crate::color::Rgba;
 use crate::request::{Color, ColorScale, DiscreteColorScale};
@@ -170,6 +179,10 @@ pub const THEME_ENV: &str = "RUSTWX_THEME";
 /// The WOOF built-ins, as tables (see the module docs).
 const WOOF_LIGHT_JSON: &str = include_str!("../themes/woof-light.json");
 const WOOF_DARK_JSON: &str = include_str!("../themes/woof-dark.json");
+/// The tropical-cyclone sheet: a fixed 10 m wind ladder to 180 kt with its
+/// band edges on the Saffir-Simpson thresholds (34, 50, 64, 83, 96, 113,
+/// 137 kt) and MSLP isobars every 4 hPa from 880 hPa, labelled every 8 hPa.
+const TC_JSON: &str = include_str!("../themes/tc.json");
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -196,6 +209,8 @@ pub struct RenderThemeFile {
     pub text: Option<TextSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub colormaps: Option<ColormapSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contours: Option<ContourSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh: Option<MeshSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -338,6 +353,30 @@ pub struct ColormapSpec {
     pub diverging: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub products: BTreeMap<String, Vec<String>>,
+    /// Explicit physical colour boundaries, in the product's displayed units.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub levels: BTreeMap<String, Vec<f64>>,
+}
+
+/// Contour overlays a theme sets, keyed by contoured field (`mslp`).
+///
+/// THE BREAKAGE THIS PREVENTS: the operational MSLP isobars are fixed at
+/// 960-1045 hPa every 2 hPa, so a hurricane core (a 938 hPa eye) was blank
+/// inside the 960 ring while the 2 hPa rings piled up and their labels
+/// overlapped around it.  A tropical-cyclone sheet names its own set here
+/// (`{"levels":{"mslp":[880,884,...]},"label_every":{"mslp":2}}`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContourSpec {
+    /// Explicit, strictly increasing contour levels in displayed units.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub levels: BTreeMap<String, Vec<f64>>,
+    /// Every Nth level is a major (thicker, labelled) contour.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub label_every: BTreeMap<String, usize>,
+    /// 5x5 box-smoothing passes on the contoured field (0-12).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub smooth_passes: BTreeMap<String, usize>,
 }
 
 /// The polygon-mesh family's own linework and empty-cell fill.
@@ -651,6 +690,9 @@ pub struct RenderTheme {
     pub sequential: Vec<Rgba>,
     pub diverging: Vec<Rgba>,
     pub products: BTreeMap<String, Vec<Rgba>>,
+    pub levels: BTreeMap<String, Vec<f64>>,
+    /// `contours.*`: per-field contour levels, major interval and smoothing.
+    pub contours: ContourSpec,
     /// The right-hand subtitle drawn in place of the derived provenance
     /// label; `None` draws the derived label.
     pub source_label: Option<String>,
@@ -706,6 +748,45 @@ impl RenderTheme {
         Self::table_theme_file(WOOF_DARK_JSON, "woof-dark")
     }
 
+    fn tc_theme_file() -> RenderThemeFile {
+        Self::table_theme_file(TC_JSON, "tc")
+    }
+
+    /// The tropical-cyclone look (see [`TC_JSON`]).
+    pub fn tc_theme() -> Self {
+        Self::from_file_spec(&Self::tc_theme_file(), None).expect("the built-in tc theme parses")
+    }
+
+    /// WOOF's light look with the `tc` sheet laid over it: every woof-light
+    /// value, then tc's colour ladders, band edges and isobars on top.
+    ///
+    /// THE BREAKAGE THIS PREVENTS: WOOF draws every map with woof-light, whose
+    /// 10 m wind scale stops at 60 kt and whose isobars stop at 960 hPa, so a
+    /// typhoon core (WOOF owner canary run_303354e41cb59dc8, Typhoon In-fa,
+    /// 942 hPa, 1 km core grid, 2026-10-27) was one colour inside a blank
+    /// 960 hPa ring.  WOOF's worker names this theme for a tropical cyclone run.
+    fn woof_light_tc_theme_file() -> RenderThemeFile {
+        let mut merged = serde_json::to_value(Self::woof_light_theme_file())
+            .expect("the built-in woof-light theme serialises");
+        let mut tc = serde_json::to_value(Self::tc_theme_file())
+            .expect("the built-in tc theme serialises");
+        if let Some(object) = tc.as_object_mut() {
+            object.remove("name");
+            object.remove("extends");
+        }
+        merge_json(&mut merged, tc);
+        let mut file: RenderThemeFile = serde_json::from_value(merged)
+            .unwrap_or_else(|err| panic!("the built-in woof-light-tc theme composes: {err}"));
+        file.name = Some("woof-light-tc".to_string());
+        file
+    }
+
+    /// The WOOF tropical-cyclone look (see [`Self::woof_light_tc_theme_file`]).
+    pub fn woof_light_tc_theme() -> Self {
+        Self::from_file_spec(&Self::woof_light_tc_theme_file(), None)
+            .expect("the built-in woof-light-tc theme parses")
+    }
+
     /// A built-in written as a compiled-in JSON table, with its `extends`
     /// (a built-in name) already laid under it.
     fn table_theme_file(text: &str, name: &str) -> RenderThemeFile {
@@ -722,6 +803,8 @@ impl RenderTheme {
             "dark" => Some(Self::dark_theme_file()),
             "woof-light" => Some(Self::woof_light_theme_file()),
             "woof-dark" => Some(Self::woof_dark_theme_file()),
+            "tc" => Some(Self::tc_theme_file()),
+            "woof-light-tc" => Some(Self::woof_light_tc_theme_file()),
             _ => None,
         }
     }
@@ -781,7 +864,9 @@ impl RenderTheme {
                     "#9ad0e6".into(),
                 ],
                 products: BTreeMap::new(),
+                levels: BTreeMap::new(),
             }),
+            contours: None,
             // The hairline and the empty-cell fill from the dark surface's
             // own ladder.  No footer: the strip is a deliberate act by the
             // caller who has a logo and a caption to put in it, and a
@@ -803,12 +888,14 @@ impl RenderTheme {
             "dark" => Some(Self::dark_theme()),
             "woof-light" => Some(Self::woof_light_theme()),
             "woof-dark" => Some(Self::woof_dark_theme()),
+            "tc" => Some(Self::tc_theme()),
+            "woof-light-tc" => Some(Self::woof_light_tc_theme()),
             _ => None,
         }
     }
 
     pub fn builtin_names() -> &'static [&'static str] {
-        &["default", "light", "dark", "woof-light", "woof-dark"]
+        &["default", "light", "dark", "woof-light", "woof-dark", "tc", "woof-light-tc"]
     }
 
     /// A built-in name or a path to a JSON theme file.
@@ -964,6 +1051,31 @@ impl RenderTheme {
             }
             products.insert(slug.clone(), parsed);
         }
+        for (slug, levels) in &colormaps.levels {
+            if levels.len() < 2 || levels.len() > 4096
+                || levels.iter().any(|v| !v.is_finite())
+                || levels.windows(2).any(|v| v[0] >= v[1]) {
+                return Err(format!("colormaps.levels.{slug}: need 2..4096 finite, strictly increasing boundaries"));
+            }
+        }
+        let contours = file.contours.clone().unwrap_or_default();
+        for (field, levels) in &contours.levels {
+            if levels.is_empty() || levels.len() > 4096
+                || levels.iter().any(|v| !v.is_finite())
+                || levels.windows(2).any(|v| v[0] >= v[1]) {
+                return Err(format!("contours.levels.{field}: need 1..4096 finite, strictly increasing levels"));
+            }
+        }
+        for (field, every) in &contours.label_every {
+            if *every == 0 {
+                return Err(format!("contours.label_every.{field}: must be at least 1"));
+            }
+        }
+        for (field, passes) in &contours.smooth_passes {
+            if *passes > 12 {
+                return Err(format!("contours.smooth_passes.{field}: {passes} is above 12"));
+            }
+        }
         let sequential = parse_list("colormaps.sequential", &colormaps.sequential)?;
         if sequential.len() == 1 {
             return Err("colormaps.sequential: a colormap needs at least two colours".into());
@@ -1060,6 +1172,8 @@ impl RenderTheme {
             sequential,
             diverging,
             products,
+            levels: colormaps.levels.clone(),
+            contours,
             source_label,
             model_label,
             source: None,
@@ -1077,9 +1191,26 @@ impl RenderTheme {
             && self.sequential.is_empty()
             && self.diverging.is_empty()
             && self.products.is_empty()
+            && self.levels.is_empty()
+            && self.contours == ContourSpec::default()
             && self.source_label.is_none()
             && self.model_label.is_none()
             && self.footer.is_none()
+    }
+
+    /// The theme's contour levels for `field` (`mslp`), when it names them.
+    pub fn contour_levels(&self, field: &str) -> Option<&[f64]> {
+        self.contours.levels.get(field).map(Vec::as_slice)
+    }
+
+    /// The theme's major-contour interval for `field`, when it names one.
+    pub fn contour_label_every(&self, field: &str) -> Option<usize> {
+        self.contours.label_every.get(field).copied()
+    }
+
+    /// The theme's smoothing passes for `field`, when it names them.
+    pub fn contour_smooth_passes(&self, field: &str) -> Option<usize> {
+        self.contours.smooth_passes.get(field).copied()
     }
 
     /// The right-hand subtitle for a product whose derived provenance
@@ -1122,19 +1253,36 @@ impl RenderTheme {
         product: &ProductKey,
         scale: &ColorScale,
     ) -> Option<ColorScale> {
-        if self.products.is_empty() {
+        let ProductKey::Named(name) = product;
+        let anchors = self.products.get(name);
+        let levels = self.levels.get(name);
+        if anchors.is_none() && levels.is_none() {
             return None;
         }
+        let mut discrete = scale.resolved_discrete();
+        if let Some(levels) = levels {
+            discrete.levels = levels.clone();
+        }
+        match (anchors, levels) {
+            // Both named: one colour per band of the theme's own levels, so a
+            // table that lists exactly levels-1 colours draws them verbatim
+            // (a fixed tropical-cyclone wind ladder, the same on every frame).
+            (Some(anchors), Some(levels)) => {
+                discrete.colors = resample(anchors, levels.len().saturating_sub(1).max(1));
+            }
+            (Some(anchors), None) => {
+                discrete.colors = resample(anchors, discrete.colors.len().max(2));
+            }
+            _ => {}
+        }
+        Some(ColorScale::Discrete(discrete))
+    }
+
+    /// True when the theme names both band edges and band colours for
+    /// `product`: its scale is drawn as listed bands, not a smooth ramp.
+    pub fn product_has_banded_scale(&self, product: &ProductKey) -> bool {
         let ProductKey::Named(name) = product;
-        let anchors = self.products.get(name)?;
-        let discrete = scale.resolved_discrete();
-        let count = discrete.colors.len().max(2);
-        Some(ColorScale::Discrete(DiscreteColorScale {
-            levels: discrete.levels,
-            colors: resample(anchors, count),
-            extend: discrete.extend,
-            mask_below: discrete.mask_below,
-        }))
+        self.products.contains_key(name) && self.levels.contains_key(name)
     }
 
     /// Install the theme's fonts into the text engine (before the first
@@ -1434,6 +1582,35 @@ mod tests {
     }
 
     #[test]
+    fn woof_light_tc_is_the_woof_look_with_the_tc_ladders_and_isobars() {
+        // WOOF owner canary run_303354e41cb59dc8 (Typhoon In-fa, 942 hPa): woof-light's
+        // 60 kt wind scale and 960 hPa isobar floor drew the core as one colour.
+        let woof = RenderTheme::builtin("woof-light").expect("built in");
+        let tc = RenderTheme::builtin("tc").expect("built in");
+        let both = RenderTheme::builtin("woof-light-tc").expect("built in");
+        assert_eq!(both.name, "woof-light-tc");
+        assert_eq!(both.source_label, woof.source_label, "WOOF's labels stay");
+        assert_eq!(both.model_label, woof.model_label);
+        let wind = "mslp_10m_winds_wind_speed";
+        assert_eq!(both.levels.get(wind), tc.levels.get(wind), "tc's wind band edges");
+        assert_eq!(both.products.get(wind), tc.products.get(wind), "tc's wind colours");
+        let edges = both.levels.get(wind).expect("wind edges");
+        assert!(edges.last().copied().unwrap_or(0.0) >= 180.0, "the ladder reaches 180 kt");
+        for kt in [34.0, 50.0, 64.0, 83.0, 96.0, 113.0, 137.0] {
+            assert!(edges.contains(&kt), "a band edge on {kt} kt");
+        }
+        assert!(both.product_has_banded_scale(&ProductKey::Named(wind.to_string())));
+        assert_eq!(both.contour_levels("mslp").and_then(|l| l.first()).copied(), Some(880.0));
+        assert_eq!(both.contour_label_every("mslp"), Some(2), "labelled every 8 hPa");
+        assert!(RenderTheme::builtin_names().contains(&"woof-light-tc"));
+        let file = RenderThemeFile::from_json(r##"{"extends":"woof-light-tc","text":{"source_label":"Recast WOOF · from GFS"}}"##)
+            .unwrap();
+        let child = RenderTheme::from_file_spec(&file, None).expect("a WOOF run's theme file extends it");
+        assert_eq!(child.levels.get(wind), tc.levels.get(wind));
+        assert_eq!(child.source_label.as_deref(), Some("Recast WOOF · from GFS"));
+    }
+
+    #[test]
     fn the_generic_built_ins_draw_the_derived_labels() {
         for name in ["default", "light", "dark"] {
             let theme = RenderTheme::builtin(name).expect("built in");
@@ -1702,5 +1879,32 @@ pub fn aerosol_sequential_scale(aod: bool) -> DiscreteColorScale {
                      Color::rgba(0, 95, 96, 255), Color::rgba(0, 58, 60, 255)],
         extend: crate::request::ExtendMode::Max,
         mask_below: None,
+    }
+}
+
+#[cfg(test)]
+mod explicit_level_tests {
+    use super::*;
+    #[test]
+    fn levels_are_opt_in_and_leave_other_products_untouched() {
+        let spec = RenderThemeFile::from_json(r#"{"colormaps":{"levels":{"wind":[0,40,80,120,160]}}}"#).unwrap();
+        let theme = RenderTheme::from_file_spec(&spec, None).unwrap();
+        let original = ColorScale::Discrete(DiscreteColorScale {
+            levels: vec![0., 30., 60.], colors: vec![Color::BLACK, Color::WHITE],
+            extend: crate::request::ExtendMode::Max, mask_below: None,
+        });
+        let changed = theme.product_scale_override(&ProductKey::named("wind"), &original).unwrap().resolved_discrete();
+        assert_eq!(changed.levels, vec![0.,40.,80.,120.,160.]);
+        assert_eq!(changed.colors, original.resolved_discrete().colors);
+        assert!(theme.product_scale_override(&ProductKey::named("rain"), &original).is_none());
+        assert!(RenderTheme::default_theme().product_scale_override(&ProductKey::named("wind"), &original).is_none());
+        assert!(!theme.is_default());
+    }
+    #[test]
+    fn unordered_or_empty_boundaries_refuse() {
+        for levels in ["[]", "[1]", "[0,0]", "[2,1]"] {
+            let spec = RenderThemeFile::from_json(&format!("{{\"colormaps\":{{\"levels\":{{\"wind\":{levels}}}}}}}")).unwrap();
+            assert!(RenderTheme::from_file_spec(&spec, None).is_err());
+        }
     }
 }

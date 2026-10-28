@@ -27,6 +27,23 @@ def test_named_arms_combine_sources_and_cycles_without_a_second_recipe():
     assert plan.member_variants == request.member_variants
 
 
+@pytest.mark.parametrize("kind", ["member-roster", "control", "time-lagged"])
+def test_a_window_ending_between_source_leads_is_bracketed_not_refused(kind):
+    # U-E2, WOOF run_0cd03a9ca0a8f9fb: a 2 h GFS sensitivity (member-roster)
+    # run was refused with "gfs does not publish the requested f0/f2
+    # valid-time knots"; the single-run door brackets it with f0/f3.
+    cycle = datetime(2026, 10, 26, 12, tzinfo=timezone.utc)
+    variants = ({"name": "reference"}, {"name": "dry", "surface": {"soil_moisture_scale": 0.9}})
+    plan = build_recipe(source="gfs", cycle=cycle, start=cycle, end=cycle + timedelta(hours=2),
+        count=2, base_seed=0, kind=kind,
+        member_variants=variants if kind == "member-roster" else ())
+    assert plan.start == cycle and plan.end == cycle + timedelta(hours=2)
+    assert plan.acquisition_window(plan.base) == (0, 3)
+    args = plan.fetch_argv(plan.base, "inputs")
+    assert args[args.index("--hours") + 1] == "3"
+    assert args[args.index("--forecast-start-hour") + 1] == "0"
+
+
 def test_extra_roster_trajectory_refuses_ambiguous_arm_ownership():
     with pytest.raises(ValueError, match="ownership ambiguous"):
         EnsembleRequest(members=1, recipe="member-roster",

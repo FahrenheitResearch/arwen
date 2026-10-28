@@ -297,3 +297,119 @@ def test_node_groups_share_one_each():
         iau.IauNode({"thp": one}, iau.box_density(300.0, 60.0),
                     group="hydrometeors")])
     assert set(forcing.groups) == {"analysis", "hydrometeors"}
+
+
+# -- the tiled road: the forcing served compute window by compute window -------------------------
+#
+# The breakage: a streamed domain steps tile buffers, never the DomainState the door attached the
+# forcing to, so a DA leg that fell to [tiles] integrated its whole window with nothing forced (G10
+# 0.0, camp-us-20230710-r n5q15 cycle 10:00 mem003, 2026-10-27).  A window's fold must give the
+# resident words on every point it owns, and the lease must book each domain step once.
+
+def _random_domain(nz=3, ny=23, nx=29, seed=7):
+    rng = np.random.default_rng(seed)
+    r = lambda *s: rng.uniform(0.5, 1.5, s).astype(np.float32)  # noqa: E731
+    z = lambda *s: np.zeros(s, dtype=np.float32)  # noqa: E731
+    return SimpleNamespace(
+        thp=r(nz, ny, nx), u=r(nz, ny, nx + 1), v=r(nz, ny + 1, nx),
+        w=r(nz + 1, ny, nx), php=r(nz + 1, ny, nx), qv=None,
+        mup=(100.0 * r(ny, nx)), mub2d=(9.0e4 * r(ny, nx)),
+        c1h=r(nz), c2h=r(nz), c1f=r(nz + 1), c2f=r(nz + 1),
+        msfu=r(ny, nx + 1), msfv=r(ny + 1, nx), msft=r(ny, nx), has_msf=True,
+        elapsed_seconds=0.0,
+        rth_t=z(nz, ny, nx), ru_t=z(nz, ny, nx + 1), rv_t=z(nz, ny + 1, nx),
+        rph_t=z(nz + 1, ny, nx), rw_t=z(nz + 1, ny, nx))
+
+
+_STAGGER = {"u": "u", "ru_t": "u", "msfu": "u", "v": "v", "rv_t": "v", "msfv": "v"}
+
+
+def _window_state(domain, spec):
+    out = SimpleNamespace(has_msf=domain.has_msf, qv=None, elapsed_seconds=domain.elapsed_seconds)
+    for name, value in vars(domain).items():
+        if isinstance(value, np.ndarray) and value.ndim >= 2:
+            setattr(out, name, iau.window_of(np, value, spec, _STAGGER.get(name, "mass")).copy())
+        elif isinstance(value, np.ndarray):
+            setattr(out, name, value)
+    return out
+
+
+def _owned(array, spec, variant, local=False):
+    """The window's owned interior (mass columns, and every face between them) in domain or local
+    coordinates: the points the scatter writes, whose face neighbours are always in the window."""
+    ey, ex = (1 if variant == "v" else 0), (1 if variant == "u" else 0)
+    y0, x0 = (spec.cj0, spec.ci0) if local else (0, 0)
+    return array[..., spec.j0 - y0:spec.j1 + ey - y0, spec.i0 - x0:spec.i1 + ex - x0]
+
+
+@pytest.mark.parametrize("rows", [1, 5])
+@pytest.mark.parametrize("flags", [dict(specified=True), dict(open_x=True, open_y=True), {}])
+def test_a_tiled_sweep_forces_the_resident_words_on_every_owned_point(rows, flags):
+    from tilestream.spec import plan_tiles
+
+    domain = _random_domain()
+    rng = np.random.default_rng(11)
+    names = ("thp", "u", "v", "w", "php")
+    inc = {name: rng.normal(size=getattr(domain, name).shape).astype(np.float32) for name in names}
+    knots = iau.box_density(0.0, 600.0)
+    cfg = SimpleNamespace(**{"dt": 30.0, "ny": 23, "nx": 29, "specified": False, "nested": False, **flags})
+    resident = iau.IauForcing(domain, [iau.IauNode(dict(inc), knots)], boundary_rows=rows)
+    streamed = iau.IauForcing(domain, [iau.IauNode(dict(inc), knots)], boundary_rows=rows)
+    specs = plan_tiles(29, 23, 8, 7, halo=4, periodic=False)
+    lease = iau.IauSweepLease(cfg, forcing=streamed)
+    for step in range(22):                           # past the window's end at 600 s
+        domain.elapsed_seconds = 30.0 * step
+        full = resident.fold(domain, cfg, None)
+        lease.begin(windows=len(specs))
+        for k, spec in enumerate(specs):
+            window = _window_state(domain, spec)
+            lease.bind_window(window, spec, k)
+            got = window._iau_forcing.fold(window, cfg, None)
+            if full is None:
+                assert got is None
+                continue
+            for slot, value in full.slow.items():
+                variant = _STAGGER.get(slot, "mass")
+                np.testing.assert_array_equal(_owned(got.slow[slot], spec, variant, local=True),
+                                              _owned(value, spec, variant), err_msg=f"{slot} tile {k}")
+        lease.finish()
+        assert streamed.steps_forced == resident.steps_forced
+        assert [n.applied for n in streamed.nodes] == [n.applied for n in resident.nodes]
+    assert streamed.applied_fraction == resident.applied_fraction
+    assert abs(streamed.applied_fraction - 1.0) < 1e-12
+
+
+def test_a_sweep_that_forced_part_of_the_domain_is_never_booked():
+    from tilestream.spec import plan_tiles
+
+    domain = _random_domain()
+    cfg = SimpleNamespace(dt=30.0, ny=23, nx=29, specified=True, nested=False)
+    forcing = iau.IauForcing(domain, [iau.IauNode({"thp": np.ones_like(domain.thp)},
+                                                  iau.box_density(0.0, 600.0))])
+    specs = plan_tiles(29, 23, 8, 7, halo=4, periodic=False)
+    lease = iau.IauSweepLease(cfg, forcing=forcing)
+    lease.begin(windows=len(specs))
+    window = _window_state(domain, specs[0])
+    lease.bind_window(window, specs[0], 0)
+    window._iau_forcing.fold(window, cfg, None)
+    with pytest.raises(iau.IauError):
+        lease.finish()
+    assert forcing.applied_fraction == 0.0 and forcing.steps_forced == 0
+
+
+def test_the_lease_follows_the_state_and_is_released_with_it():
+    domain = _random_domain()
+    run = SimpleNamespace(cfg=SimpleNamespace(ny=23, nx=29))
+    iau.attach_iau_sweep_lease(run, domain)
+    assert getattr(run, "_iau_sweep_lease", None) is None
+    forcing = iau.IauForcing(domain, [iau.IauNode({"thp": np.ones_like(domain.thp)},
+                                                  iau.box_density(0.0, 600.0))])
+    iau.attach(domain, forcing)
+    iau.attach_iau_sweep_lease(run, domain)
+    lease = run._iau_sweep_lease
+    assert lease.forcing is forcing
+    iau.attach_iau_sweep_lease(run, domain)
+    assert run._iau_sweep_lease is lease
+    iau.detach(domain)
+    iau.attach_iau_sweep_lease(run, domain)
+    assert run._iau_sweep_lease is None
