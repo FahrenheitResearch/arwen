@@ -59,6 +59,7 @@ def test_the_gdas_query_requests_native_specific_humidity():
 def test_the_gdas_crop_asks_for_every_variable_its_mapping_binds():
     """rel/2.9.10's default GDAS route, this grib-filter crop, was refused at
     prepare: "mapped frame ... lacks required fields ['cloud_ice_mixing_ratio',
+    'cloud_water_mixing_ratio', 'graupel_or_hail_mixing_ratio', ...]" (test host,
     gpuwm go --prepare-only, GDAS 2026-10-29 06Z).  The query asked for none
     of the five hydrometeors the packaged GDAS mapping requires since 2.9.9.
     """

@@ -809,6 +809,7 @@ def test_the_hrrr_default_is_the_record_subset_through_the_backbone(
     """Move only the bytes the preparation reads (Drew, 2026-10-29).
 
     ``auto`` takes the ``.idx`` record subset wherever the index is
+    complete and the whole object where it is not.  Measured on a test host
     over AWS, 12Z f00-f03: whole files 4,601 MB, the subset 1,823 MB,
     quicker and with byte-identical prepared files.
     """

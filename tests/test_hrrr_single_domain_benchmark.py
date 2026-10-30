@@ -442,6 +442,7 @@ def test_the_receipt_check_holds_each_worker_count_to_the_allocation():
     Each is held to at most its allocation.  Fewer is the backend's own
     answer to a busy host (its memory headroom fell between the budget
     and the job): "f00 mapping used 20 native workers; expected 24"
+    refused a CPU preparation on a loaded test host although the count moves
     no byte.  More than the allocation is the oversubscription the check
     exists for.
     """

@@ -1,6 +1,7 @@
 """GFS/GDAS records by .idx from the archive's objects (fix/gfs-aws-record-subset).
 
 The defect: under the hosted AWS policy (WOOF) every GFS start moved whole
+pgrb2.0p25 objects.  Measured on a test host for 2026-10-29 12Z f000/f003/f006:
 1,556 MB in 70.3 s, of which the 124 records the decode reads are 266.5 MB.
 The same records come from the objects by the byte ranges of their .idx;
 these tests pin that selection to the grib-filter's own declaration and
@@ -203,7 +204,7 @@ def test_gdas_records_take_every_level_its_grib_filter_takes(tmp_path, monkeypat
     """GDAS's mapped preparation reads air temperature up to 1 hPa.
 
     A selection cut to the declared decode ladder (100 hPa and below) was
-    refused at prepare on node-2 ("air_temperature vertical coverage
+    refused at prepare on a test host ("air_temperature vertical coverage
     mismatch"); the grib-filter ladder is every published level.
     """
     _host(monkeypatch, source="gdas")

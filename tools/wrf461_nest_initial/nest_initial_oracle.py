@@ -9,6 +9,7 @@ own transaction, and compares it word for word (the transaction ArWen's door
 
 What WRF does to an input-file nest before the nest's t = 0 history, as
 measured here (UAE 9 km/3 km, physics off, feedback = 1, every field below
+0 differing words against wrf.exe 4.6.1 strict on a test host):
 
 1. med_initialdata_input reads wrfinput_d02 AND runs start_domain on it: MUB,
    PB, T_INIT, ALB and PHB are rebuilt from the file's HGT by the cold-start

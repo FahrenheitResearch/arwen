@@ -176,6 +176,7 @@ def test_an_index_with_no_record_for_a_field_and_a_paced_host_move_the_object_wh
 
 def test_a_reset_range_is_asked_again_before_it_fails_the_object(tmp_path, monkeypatch):
     """One reset among a wrfprs selection's 127 ranges sent the whole object
+    to NOMADS (412 MB instead of 186 MB, test host 2026-10-29)."""
     monkeypatch.setattr(record_index.time, "sleep", lambda _seconds: None)
     data, idx = _object([("TMP", "500 mb"), ("RH", "500 mb"), ("SPFH", "500 mb")])
     opener, asked = _host(data, idx)
@@ -214,7 +215,7 @@ def test_a_reset_range_is_asked_again_before_it_fails_the_object(tmp_path, monke
 
 def test_the_ranges_ride_one_persistent_connection_per_stream(tmp_path, monkeypatch):
     """A fresh connection per range moved a wrfprs selection's 127 ranges at
-    7.5-9 MB/s where the whole object moved at 23 MB/s (node-2, 2026-10-29);
+    7.5-9 MB/s where the whole object moved at 23 MB/s (test host, 2026-10-29);
     persistent connections moved them at 23 MB/s.  Same bytes either way."""
     import http.server
     import re as _re
