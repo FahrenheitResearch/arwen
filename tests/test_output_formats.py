@@ -39,7 +39,9 @@ def test_writer_spawn_has_background_priority_and_bounded_pools(tmp_path, monkey
     command, kwargs = launches[0]
     if formats.os.name == 'nt':
         assert kwargs['creationflags'] == subprocess.BELOW_NORMAL_PRIORITY_CLASS
-        assert command[:2] == ['/writer', '--request']
+        # The writer path is str(Path('/writer')), '\writer' on Windows (public ci cpu (windows-2025), 2.9.10 P
+        # f2d381407731, 2026-10-30).
+        assert command[:2] == [str(Path('/writer')), '--request']
     else:
         prefix = ['/bin/ionice', '-c', '2', '-n', '7'] if io_launcher else []
         assert command[:-1] == prefix + ['/bin/nice', '-n', '10', '/writer', '--request']
