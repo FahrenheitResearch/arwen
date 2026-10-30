@@ -697,6 +697,25 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "rw_mpas_lbc", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_MPAS_LBC",
         "MPAS lateral boundaries for a limited-area mesh"),
+    # The RRFS-MPAS init door's two engines (gpuwm-hex init --physics-suite
+    # hrrrv5): the fork's init_atmosphere in Rust, and the GSL drag
+    # statistics generator.  Source-only bins reach no pip install, so
+    # without these rows the door's producer is unreachable.
+    BundledArtifact(
+        "rw_mpas_init_v831", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_MPAS_INIT_V831",
+        "RRFS-MPAS initial conditions and boundaries (the fork's init_atmosphere)",
+        # 2.9.10 (PyPI per-file limit): carried in the wheel, it and
+        # rw_mpas_gsl_oro (~3.0 MB compressed together) took the Linux platform
+        # wheel (2.9.9: 98,751,849 bytes) past 100,000,000 bytes. Only the
+        # gpuwm-hex RRFS init door reaches them, and it stages them on first use.
+        on_demand=True),
+    BundledArtifact(
+        "rw_mpas_gsl_oro", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_MPAS_GSL_ORO",
+        "GSL orographic drag statistics (ugwp_oro_data.nc) for the RRFS suites",
+        # 2.9.10 (PyPI per-file limit): see rw_mpas_init_v831 above.
+        on_demand=True),
     # 2.9.0.  The gpuwm-hex product door draws soundings and meteograms
     # with this binary and nothing else.  As a source-only cargo bin it
     # reached no pip install: `gpuwm-hex doctor` exited 1 naming it and
@@ -760,6 +779,12 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     # the regrid, the Zarr and ZIP writing), so a bundle without it is an
     # install whose `ml-export` can only refuse.  Environment variable
     # spelled to match gpuwm.ml_export.BINARY_ENV; a test binds the two.
+    BundledArtifact(
+        "rw_icechunk", "executable", "tools/rw_icechunk",
+        "GPUWM_RW_ICECHUNK", "atomic native history output (Icechunk)",
+        # 2.9.10 (PyPI per-file limit): ~10.8 MB compressed per platform wheel,
+        # for an opt-in output (--output-format icechunk); its first use stages it.
+        on_demand=True),
     BundledArtifact(
         "rw_mlexport", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_MLEXPORT",
@@ -1334,6 +1359,7 @@ def verify_source_revision(payload: bytes, *, expected: str,
 #: from the Cargo manifests and the Rust sources and refuses any it does
 #: not find covered here.
 NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
+    "tools/rw_icechunk": ("tools/rw_icechunk",),  # completed below, after tools/rustwx
     "tools/nextgen_hydrofabric": ("tools/nextgen_hydrofabric",),
     "tools/nextgen_verify": ("tools/nextgen_verify",),
     "tools/grib1_bridge": ("tools/grib1_bridge", "tools/preparation_resources.rs",
@@ -1463,6 +1489,11 @@ NATIVE_BUILD_INPUTS["tools/ocean_prepare"] = (
     "tools/ocean_prepare", *NATIVE_BUILD_INPUTS["tools/rustwx"])
 NATIVE_BUILD_INPUTS["tools/rw-bathy"] = (
     "tools/rw-bathy", *NATIVE_BUILD_INPUTS["tools/rustwx"])
+# rw_icechunk builds against the shared NetCDF reader (tools/rustwx/vendor/netcrust) and resolves its registry
+# crates from tools/rustwx/vendor/crates-io (its .cargo/config.toml); reaching into tools/rustwx reaches its
+# inputs too (tests/test_native_build_inputs.py closure rule, red for rw_icechunk at the EB4 tip 00c11b5330).
+NATIVE_BUILD_INPUTS["tools/rw_icechunk"] = (
+    "tools/rw_icechunk", *NATIVE_BUILD_INPUTS["tools/rustwx"])
 
 
 #: Paths inside a crate root that its build never reads: packed into the

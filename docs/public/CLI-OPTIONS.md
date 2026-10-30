@@ -100,11 +100,14 @@ Takes no options of its own.
 | `--from-run RUNDIR` | the source run's output directory -- where its gpuwmrst_*.npz checkpoints are. Optional only when --from names a checkpoint file explicitly |
 | `--gpu-uuid GPU-UUID` | physical GPU UUID to lock (required on multi-GPU hosts) |
 | `--health-debug` | enable debug phase health attribution hooks |
+| `--icechunk-store URL` | Output store base: local path or s3://bucket/prefix; domain and member paths are appended (default RUN/icechunk) |
 | `--keep-member-files` | also retain every member's full history files |
 | `--members N` | make an N-member ensemble with aggregate products |
 | `--no-memory-gate` | run a case whose priced peak envelope exceeds this card's free memory anyway, as `gpuwm go --no-memory-gate` does: the envelope is an upper bound and the card's own allocation then decides; a model state too big to build at all is still refused |
 | `--no-supervise` | run the experiment in this process (escape hatch; disables fresh-process recovery and exclusive-GPU supervision) |
 | `--outdir OUT` | the NEW run's output directory; it must be empty and must not be inside the source run |
+| `--output-config TOML` | Read [output] formats and icechunk_store from TOML; CLI values override it |
+| `--output-format FORMATS` | Output-format table rows, comma separated (default netcdf); netcdf,icechunk adds atomic native Zarr v3 history |
 | `--prep-timeout SECONDS` | optional preparation heartbeat timeout; default is no timeout until integration begins |
 | `--prepare-only` | write the branch run directory, its config and its receipts, then stop without integrating -- the price-it-first step a what-if screen shows before committing a card |
 | `--restart-roster JSON` | continue the exact original members from a durable ensemble restart roster |
@@ -492,7 +495,9 @@ Takes no options of its own.
 | `--hours N` | forecast length (run_seconds = N*3600) |
 | `--isftcflx {0,1,2}` | surface flux over water on every grid (WRF isftcflx): 0 standard MM5 roughness, 1 Donelan drag with constant heat and moisture roughness (the tropical cyclone option), 2 Donelan drag with Garratt heat and moisture roughness. Default: the suite's own (0) |
 | `--ladder {12,12-3,12-3-1,12-3-1-0.5,auto}` | preset nest dx chain in km (default: 12 -- one 12 km domain, the shape `gpuwm go` runs end to end, same as the interactive session). Nest trees are explicit opt-in: a deeper preset, `auto` (the deepest preset that fits the card), or --root-dx / --chain for anything else; their closing block names the tree runner they route to |
-| `--les-below-m METRES` | write the resolved-turbulence closure (PBL off, 3-D Smagorinsky, isotropic mixing) on every nest at or below this spacing (default 250 m; 0 never) |
+| `--les-below-m METRES` | write the resolved-turbulence closure (PBL off, a 3-D closure, isotropic mixing) on every real-data domain at or below this spacing (default 250 m; 0 never) |
+| `--les-closure {smagorinsky,tke}` | the 3-D closure an LES domain runs: smagorinsky (km_opt 3, the default) or tke (km_opt 2, 1.5-order prognostic TKE) |
+| `--les-inflow-seeding {on,off}` | cell perturbations on the inflow faces of an LES nest whose parent runs a 1-D PBL (default on) |
 | `--member` | ensemble trajectory member; defaults to the route's control |
 | `--model` | model key from this source's declared model table |
 | `--mosaic-cat` | Noah mosaic tile count on every grid (WRF mosaic_cat) |
@@ -592,19 +597,25 @@ Takes no options of its own.
 | `--follow-threshold` | the target's threshold (cape-shear index 0.25, boundary 4 K/100 km, object 35 dBZ, low 1 hPa) |
 | `--geog-root` | the WPS_GEOG tree the child's own static geography is built from (default: the child config's [static] geog_root, else the staged tree `gpuwm fetch-geog` installs) |
 | `--health-interval-seconds` | model seconds between child health lines (CFL, w_max, NaN check; default 60) |
+| `--highres-cache` | the folder the child's high-resolution terrain tiles and land-cover rasters are read from and cached in (default: the child config's [static.highres] cache_root, else the engine's per-user cache). A child at 600 m or finer takes land cover and soil at source resolution (CGLC-MODIS-LCZ, SoilGrids) as well as Copernicus terrain, so point this at a cache that already holds the land-cover raster |
 | `--hours` | --point run window in hours (default: the full parent archive window) |
 | `--i-parent-start` | 1-based west-east parent index of the child's southwest corner (required with --child-config; --point derives it) |
+| `--icechunk-store URL` | Output store base: local path or s3://bucket/prefix; domain and member paths are appended (default RUN/icechunk) |
 | `--j-parent-start` | 1-based south-north parent index of the child's southwest corner (required with --child-config; --point derives it) |
 | `--keep-checkpoints N` | how many complete checkpoint sets the child keeps in --out (default 1, the newest, which a downscale from this child binds to); 0 keeps every set |
+| `--les-below-m METRES` | a --point child at or below this spacing runs the LES closure (PBL off, a 3-D closure, isotropic mixing) on top of its suite (default 250 m, the same rule `gpuwm domain` writes on nests; 0 never) |
+| `--les-closure {smagorinsky,tke}` | the LES child's 3-D closure: smagorinsky (km_opt 3, default) or tke (km_opt 2) |
 | `--max-boundary-interval-seconds` | explicit ceiling on acceptable parent cadence (the scientific cadence contract); mutually exclusive with --accept-parent-cadence |
 | `--no-memory-gate` | run a child whose priced peak envelope exceeds this card's free memory anyway, as `gpuwm go --no-memory-gate` does: the envelope is an upper bound and the card's own allocation then decides; a child state too big to build at all is still refused |
 | `--out` | create-only output directory for the child run (report.json, wrfout frames, restart) |
+| `--output-config TOML` | Read [output] formats and icechunk_store from TOML; CLI values override it |
+| `--output-format FORMATS` | Output-format table rows, comma separated (default netcdf); netcdf,icechunk adds atomic native Zarr v3 history |
 | `--output-interval-seconds` | --point child history cadence (default: the parent cadence) |
 | `--parent-domain` | parent domain id when the directory carries several (e.g. 3 for the innermost archived parent) |
 | `--parent-namelist` | stock-WRF namelist.input of the parent run |
 | `--parent-namelist-domain` | domain column of --parent-namelist (default 1) |
 | `--parent-restart PATH\|latest` | gpuwm restart of the parent run (authoritative physics evidence); 'latest' discovers the newest complete checkpoint set in the parent's own run directory |
-| `--parent-terrain` | run the child on its parent's interpolated terrain, land use and soil. By default a child builds its own static geography at its own spacing (terrain, land use, soil; Copernicus 30 m terrain at 1 km or finer) and the parent's state is blended and rebalanced onto it as WRF's ndown does |
+| `--parent-terrain` | run the child on its parent's interpolated terrain, land use and soil. By default a child builds its own static geography at its own spacing (terrain, land use, soil; Copernicus 30 m terrain at 1 km or finer, CGLC-MODIS-LCZ land cover and SoilGrids soil at 600 m or finer) and the parent's state is blended and rebalanced onto it as WRF's ndown does |
 | `--physics-profile ID\|parent` | the --point child's physics suite, a `gpuwm domain --physics-profile` id, or 'parent' to keep the parent's physics verbatim (default: thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1, the HRRR-shape suite, for a child finer than 4 km; the parent's physics otherwise) |
 | `--point LAT,LON` | derive the child around this point instead of --child-config (gpuwm parents only) |
 | `--preprocess-backend {cuda,cpu,auto}` | where the parent-to-child interpolation runs (default auto: on the card when its priced interpolation fits the card's free memory, else on the CPU; cuda refuses rather than move it; cpu runs it off-GPU) |
@@ -729,9 +740,11 @@ Takes no options of its own.
 | `--family-weights ai=0.5,physics=0.5` | family probability masses, must sum to 1; defaults to member shares |
 | `--geog-root DIR` | override the geography tree (default: the config's [case_data].geog_root or [static].geog_root, otherwise the staged WPS_GEOG tree) |
 | `--grib2` | write native surface and pressure-level GRIB2 as each frame lands, then <run>/grib2-grib2.zip |
+| `--history-compression {deflate,none}` | history frame storage: deflate (default; lossless NetCDF-4, the same values in about a third of the disk) or none (classic CDF-2). Also GPUWM_HISTORY_COMPRESSION |
 | `--history-interval SECONDS` | history frame interval when creating a generated-source domain |
 | `--hours` | forecast duration when creating a domain (default 3 h) |
 | `--hydro on\|off\|SETTINGS.toml` | hydro is opt-in: --hydro on couples NextGen hydro wherever a hydrofabric covers the domain; a TOML file selects settings; without it the forecast has no hydro |
+| `--icechunk-store URL` | Output store base: local path or s3://bucket/prefix; domain and member paths are appended (default RUN/icechunk) |
 | `--init` | initial UTC analysis/cycle, YYYY-MM-DDTHH |
 | `--initial-inputs JSON` | a separate packaged analysis for the initial state (gpuwm prep --initial-inputs); the fetched source still supplies every lateral boundary, and the forecast starts at the preparation head while the later boundary times are built |
 | `--keep-checkpoints N` | how many complete checkpoint sets the run keeps in its folder (default 1, enough to resume); 0 keeps every hourly set, which a later branch or downscale from an earlier checkpoint needs |
@@ -749,6 +762,8 @@ Takes no options of its own.
 | `--no-surface-fill` | disable fill soil/SST perturbations |
 | `--no-verify-visuals` | skip postforecast observation verification; the physical run is unchanged |
 | `--outdir DIR` | output root for one timestamped run folder per launch, with forecast files, pictures and diagnostics (default <config-stem>-go beside the config); an existing run-... folder is used directly |
+| `--output-config TOML` | Read [output] formats and icechunk_store from TOML; CLI values override it |
+| `--output-format FORMATS` | Output-format table rows, comma separated (default netcdf); netcdf,icechunk adds atomic native Zarr v3 history |
 | `--physics-arms {fill,all,off}` | _(the parser declares no help text for this option)_ |
 | `--prepare-only` | fetch and stream prepared inputs without starting a forecast |
 | `--prepared-root DIR` | run this existing prepared bundle without fetch or preparation; add --restart to continue its checkpoint |
@@ -887,7 +902,7 @@ Takes no options of its own.
 | `--late-after-minutes MIN` | how far past its scheduled time a lead may be before the fetch stops with exit 75 (default: the source table's posting late_after_minutes) |
 | `--manifest-out JSON` | manifest path (default <out>/gfs-input-manifest.json) |
 | `--member ID` | ERA5 EDA: required encoded member 0..9. Ensemble routes (gefs, aigefs): which member to fetch (default the control). Member identity is a PATH component for these products, so the files land under their declared upstream-relative paths and `gpuwm-member-prep --inputs` reads the directory as published |
-| `--mode {auto,full-file,idx-subset}` | the byte transport. hrrr (--engine rust): 'full-file' is the default -- the whole object in parallel range GETs, which is the pipeline this product is built on; 'idx-subset' is the opt-in bandwidth saver: it selects records instead of taking the file, saves transfer volume, costs wall clock, and refuses rather than silently degrading when the index cannot carry the selection; 'auto' is the probe rule -- take the whole file when the .idx is absent, malformed, or provably shorter than the object -- which is what an install without the rust backbone falls back to. gfs/gdas: 'full-file' takes the whole pgrb2.0p25 objects from the S3 archive (either engine); omitted or 'auto', the NOMADS grib-filter crop remains the default (whole archive objects for a cycle the crop host no longer keeps), and 'idx-subset' refuses -- .idx record subsetting of the raw objects is not a certified GFS route. The other forecast sources take whole objects, and 'auto' there is that same full-file default |
+| `--mode {auto,full-file,idx-subset}` | the byte transport. hrrr: 'auto' is the default -- the .idx record subset the preparation reads (about 40 % of the bytes), and the whole object for a file whose .idx is absent, malformed, or provably shorter than the object, each file's line saying which; 'full-file' takes every object whole (--engine rust); 'idx-subset' takes only subsets and refuses rather than degrading when the index cannot carry the selection (--engine rust). gfs/gdas: 'full-file' takes the whole pgrb2.0p25 objects from the S3 archive (either engine); 'idx-subset' takes from those objects only the records the grib-filter asks for, by their .idx byte ranges (an object whose host keeps no index moves whole); omitted or 'auto', the NOMADS grib-filter crop remains the default (the archive's records for a cycle the crop host no longer keeps, and under the hosted AWS policy). The other forecast sources take whole objects, and 'auto' there is that same full-file default |
 | `--model MODEL` | --source earth2: which NVIDIA Earth-2 model to run through earth2studio (fcn3, sfno, pangu, aurora, fengwu, graphcast, aifs: a row of gpuwm/authorities/earth2-models.v1.json); the forecast and the ERA5 analysis at --cycle are written to --out |
 | `--no-probe` | with --readiness: compute the schedule from the table only and ask no host |
 | `--out DIR` | output directory (created; complete files are skipped on re-run) |
@@ -1025,9 +1040,11 @@ Takes no options of its own.
 | `--family-weights ai=0.5,physics=0.5` | family probability masses, must sum to 1; defaults to member shares |
 | `--geog-root DIR` | override the geography tree (default: the config's [case_data].geog_root or [static].geog_root, otherwise the staged WPS_GEOG tree) |
 | `--grib2` | write native surface and pressure-level GRIB2 as each frame lands, then <run>/grib2-grib2.zip |
+| `--history-compression {deflate,none}` | history frame storage: deflate (default; lossless NetCDF-4, the same values in about a third of the disk) or none (classic CDF-2). Also GPUWM_HISTORY_COMPRESSION |
 | `--history-interval SECONDS` | history frame interval when creating a generated-source domain |
 | `--hours` | forecast duration when creating a domain (default 3 h) |
 | `--hydro on\|off\|SETTINGS.toml` | hydro is opt-in: --hydro on couples NextGen hydro wherever a hydrofabric covers the domain; a TOML file selects settings; without it the forecast has no hydro |
+| `--icechunk-store URL` | Output store base: local path or s3://bucket/prefix; domain and member paths are appended (default RUN/icechunk) |
 | `--init` | initial UTC analysis/cycle, YYYY-MM-DDTHH |
 | `--initial-inputs JSON` | a separate packaged analysis for the initial state (gpuwm prep --initial-inputs); the fetched source still supplies every lateral boundary, and the forecast starts at the preparation head while the later boundary times are built |
 | `--keep-checkpoints N` | how many complete checkpoint sets the run keeps in its folder (default 1, enough to resume); 0 keeps every hourly set, which a later branch or downscale from an earlier checkpoint needs |
@@ -1045,6 +1062,8 @@ Takes no options of its own.
 | `--no-surface-fill` | disable fill soil/SST perturbations |
 | `--no-verify-visuals` | skip postforecast observation verification; the physical run is unchanged |
 | `--outdir DIR` | output root for one timestamped run folder per launch, with forecast files, pictures and diagnostics (default <config-stem>-go beside the config); an existing run-... folder is used directly |
+| `--output-config TOML` | Read [output] formats and icechunk_store from TOML; CLI values override it |
+| `--output-format FORMATS` | Output-format table rows, comma separated (default netcdf); netcdf,icechunk adds atomic native Zarr v3 history |
 | `--physics-arms {fill,all,off}` | _(the parser declares no help text for this option)_ |
 | `--prepare-only` | fetch and stream prepared inputs without starting a forecast |
 | `--prepared-root DIR` | run this existing prepared bundle without fetch or preparation; add --restart to continue its checkpoint |
@@ -1355,7 +1374,7 @@ Takes no options of its own.
 | `--urban-treeoption {0,1}` | _(the parser declares no help text for this option)_ |
 | `--urban-ttscheme {0,1}` | _(the parser declares no help text for this option)_ |
 | `--urban-ucm-generation {wrf_471,wrf_480}` | single-layer urban numerical generation; omitted imports retain wrf_471 |
-| `--wrf-version {3,4}` | the WRF line the namelist was written for; selects only the Registry default an omitted &dynamics/use_theta_m takes (3: 0, dry theta, the line operational HRRR v4 runs; 4, the default: 1, moist theta, booked as a substitution). The report names the line and what chose it |
+| `--wrf-version` | the WRF line or release the namelist was written for (3, 4, or a release such as 4.6.1). The line selects the Registry default an omitted &dynamics/use_theta_m takes (3: 0, dry theta, the line operational HRRR v4 runs; 4, the default: 1, moist theta, booked as a substitution). A V4 release also pins the scheme generations that release runs (4.6.1: WRF 4.6's YSU, sun, Noah-MP snow aging and urban water balance; a bare 4 keeps the newest). The report names the version and what chose it |
 
 ## `gpuwm ingest`
 
@@ -2524,11 +2543,14 @@ Takes no options of its own.
 | `--from CKPT\|latest` | explicit gpuwmrst_*.npz checkpoint, or 'latest' (default) to take the newest set in --outdir whose members validate |
 | `--gpu-uuid GPU-UUID` | physical GPU UUID to lock (required on multi-GPU hosts) |
 | `--health-debug` | enable debug phase health attribution hooks |
+| `--icechunk-store URL` | Output store base: local path or s3://bucket/prefix; domain and member paths are appended (default RUN/icechunk) |
 | `--keep-member-files` | also retain every member's full history files |
 | `--members N` | make an N-member ensemble with aggregate products |
 | `--no-memory-gate` | run a case whose priced peak envelope exceeds this card's free memory anyway, as `gpuwm go --no-memory-gate` does: the envelope is an upper bound and the card's own allocation then decides; a model state too big to build at all is still refused |
 | `--no-supervise` | run the experiment in this process (escape hatch; disables fresh-process recovery and exclusive-GPU supervision) |
 | `--outdir OUT` | the interrupted run's wrfout/checkpoint directory (default out/run) |
+| `--output-config TOML` | Read [output] formats and icechunk_store from TOML; CLI values override it |
+| `--output-format FORMATS` | Output-format table rows, comma separated (default netcdf); netcdf,icechunk adds atomic native Zarr v3 history |
 | `--prep-timeout SECONDS` | optional preparation heartbeat timeout; default is no timeout until integration begins |
 | `--restart-roster JSON` | continue the exact original members from a durable ensemble restart roster |
 | `--supervisor-max-restarts N` | fresh-process recovery attempts (default 3) |
@@ -2553,18 +2575,22 @@ Takes no options of its own.
 | `--family-weights ai=0.5,physics=0.5` | family probability masses, must sum to 1; defaults to member shares |
 | `--gpu-uuid GPU-UUID` | physical GPU UUID to lock (required on multi-GPU hosts) |
 | `--health-debug` | enable debug phase health attribution hooks |
+| `--history-compression {deflate,none}` | history frame storage: deflate (default; lossless NetCDF-4, the same values in about a third of the disk) or none (classic CDF-2). Also GPUWM_HISTORY_COMPRESSION |
 | `--hydro on\|off\|SETTINGS.toml` | hydro is opt-in: on couples it wherever a hydrofabric covers the domain, a TOML file selects settings (as on gpuwm go); without it the run has no hydro |
 | `--iau {on,off}` | with --analysis: 'on' starts from the background and forces the increment over the IAU window inside every RK stage; 'off' inserts the analysis at the start. Default: on when the bundle carries increment.nc, off otherwise |
 | `--iau-boundary {background,analysis}` | with --analysis and IAU on a cold start: what the lateral boundary's first record is the coupling of. 'background' (the default, measured the smaller rim disturbance) keeps the boundary of the state the run starts from; 'analysis' rebases it onto the analysis and leaves the whole boundary zone to it |
 | `--iau-fields {all,dynamics}` | with --analysis and IAU: 'all' (the default) forces every field the increment carries; 'dynamics' forces winds, theta, vapour and geopotential and puts the hydrometeors in at the window start |
 | `--iau-mode {oneshot,3d,split,4d}` | with --analysis: how the increment enters. oneshot = --iau off; 3d (the default with --iau on) = a held tendency over a forward window. split and 4d are named gaps of this door and are refused by name |
 | `--iau-window-seconds S` | with --analysis and IAU: the window, overriding the bundle's iau.window_s |
+| `--icechunk-store URL` | Output store base: local path or s3://bucket/prefix; domain and member paths are appended (default RUN/icechunk) |
 | `--keep-member-files` | also retain every member's full history files |
 | `--members N` | make an N-member ensemble with aggregate products |
 | `--met-em DIR` | WPS metgrid directory with met_em.d0*.nc and producing namelist.input; native ArWen initialization |
 | `--no-memory-gate` | run a case whose priced peak envelope exceeds this card's free memory anyway, as `gpuwm go --no-memory-gate` does: the envelope is an upper bound and the card's own allocation then decides; a model state too big to build at all is still refused |
 | `--no-supervise` | run the experiment in this process (escape hatch; disables fresh-process recovery and exclusive-GPU supervision) |
 | `--outdir OUT` | wrfout output directory |
+| `--output-config TOML` | Read [output] formats and icechunk_store from TOML; CLI values override it |
+| `--output-format FORMATS` | Output-format table rows, comma separated (default netcdf); netcdf,icechunk adds atomic native Zarr v3 history |
 | `--prep-timeout SECONDS` | optional preparation heartbeat timeout; default is no timeout until integration begins |
 | `--preprocess-backend {cuda,cpu,auto}` | CONFIG: where the root domain's preparation runs, overriding [case_data] preprocess_backend (default: that key, else auto, which prepares on the CPU when the card reads busy or cannot hold it); pin it so two runs you compare start from the same preparation. Nests prepare on the card either way |
 | `--recipe {wofs,time-lagged,multi-model,surface-state,member-roster}` | take each ensemble member from a real source trajectory: time-lagged runs earlier cycles of the config's own source over the same window, multi-model runs the trajectories --trajectories lists, surface-state runs seeded soil moisture scales and SST offsets from [ensemble.perturbation], member-roster runs named land and fixed surface arms from [ensemble.member_variants] |
@@ -2634,9 +2660,12 @@ Takes no options of its own.
 | `--experiment-config TOML` | the experiment TOML this preparation was bound to (the tree runner binds its digest; the single-domain runner binds it through the proof) |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--health-debug` | write per-step health diagnostics with the prepared hierarchy runner |
+| `--icechunk-store URL` | Output store base: local path or s3://bucket/prefix; domain and member paths are appended (default RUN/icechunk) |
 | `--io-mode {history}` | history output (the only mode this seam offers; `--io-mode none` is a runner-level diagnostic, reachable through --print-command) |
 | `--no-memory-gate` | restore a forecast whose priced peak envelope exceeds this card's free memory anyway, as `gpuwm go --no-memory-gate` does: the envelope is an upper bound and the card's own allocation then decides; a model state too big to build at all is still refused |
 | `--outdir DIR` | where this forecast's output goes. By default it is the parent of one timestamped run folder per forecast, so running the same prepared tree twice never merges two runs' wrfout frames and report.json. Point it at an existing run-... folder and that folder is used as given -- and refused if a forecast is already in it |
+| `--output-config TOML` | Read [output] formats and icechunk_store from TOML; CLI values override it |
+| `--output-format FORMATS` | Output-format table rows, comma separated (default netcdf); netcdf,icechunk adds atomic native Zarr v3 history |
 | `--physics-profile ID` | optional assertion that the hash-bound experiment IS this shipped suite; omitted, the experiment's own suite runs as written |
 | `--print-command` | print the exact runner command, with every digest filled in, and exit without running it -- the documented boundary a third-party script writes to. The --outdir in that line is this run's own timestamped folder, named but not created: asking the question spends nothing, and the runner makes the directory when you run the line. The line is quoted for PowerShell on Windows and for a POSIX shell elsewhere |
 | `--progress-format {text,jsonl,off}` | how the run reports progress. Omitted, the runner's own default applies, which is the WRF-shaped `Timing for main:` line per step per domain on this terminal -- watching it run is the reason to run the stage alone. `jsonl` is what `gpuwm go` passes, because it owns the runner's stdout; pass it here when you are hosting this stage the same way |

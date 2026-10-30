@@ -1,11 +1,11 @@
 {
   "schema": "measured-slimming-loader-source-replay-v1",
-  "base": "e5b0c7ff52b02bf12bd0909f93eb37569c7ac079",
-  "tip": "8807f8778f854dfe58c225072addbf9abeffe432",
+  "base": "30c12f7ae6e7e3703d57a5e03802106efc2daf89",
+  "tip": "9ef53c7c4ec271a40845c4b3d66c6489d9d3c5c4",
   "source": "gpuwm/core/kernels/__init__.py",
   "before": {
-    "bytes": 55701,
-    "sha256": "737c3ca23a79c22b222c79ab7efee76e1fa8863593ef059ecd579bce99b41285"
+    "bytes": 56279,
+    "sha256": "cd5533e48c6b7c898aa49da76f480561c0983b1e616e5709d4f036de4a734d50"
   },
   "after": {
     "bytes": 56279,
@@ -40,22 +40,22 @@
     }
   },
   "artifacts": {
-    "base-coordinate/source-audit.json": "294735a7906f673e4678245fb6c8ee17dc7590201ac94aa42b0174ba60141b21",
-    "base-coordinate/direct-native-proof.json": "0c6594d28f9952ff80140ca0862b051b2462606c1b0968a70de6b682629d3fc4",
-    "tip-coordinate/source-audit.json": "581fa9e4c4eb5a57b8b5dc410fb3fb005b7c2351d0f1af82c832ea50dd371030",
-    "tip-coordinate/direct-native-proof.json": "e1b633ffac5c75836f57b7da5287b7fd8e66a8040ca05152a613b4ccfbbc6d7a",
-    "base-drivers/source-audit.json": "278642d77b919e1e77ed246bc131143186c570709d2a74b5a83f4920d15feda6",
+    "base-coordinate/source-audit.json": "8a8160db1f41612a2696b426476a5719dc66e1349a729a3b2f66e8111d313898",
+    "base-coordinate/direct-native-proof.json": "2cb25a62c9a473fae602bbc064f4fd1d22ba74d861b2220f53b5bcf45632e33d",
+    "tip-coordinate/source-audit.json": "21c360507ca0450eefd938cc5d059cfece3c5c73f988c3faa561b6b17917e2be",
+    "tip-coordinate/direct-native-proof.json": "32d1a59d5ba6ab4828ae886b0f85a73970fdd7be16b9fe41df126f5dc1eb2873",
+    "base-drivers/source-audit.json": "a3e854576346482a02feddc0bafcbabdc6c5cd8e7f9a1bbfbcd00d2d5a767a04",
     "base-drivers/horizontal-driver.json": "5db3a9264506551d760f34e81137ba528177718489d92bc2feb3694594b7cc94",
     "base-drivers/vertical-driver.json": "ee7dba7a50dfb80ceff910fc8c635acf8f9c7d0cb2b99dc66004d83cbfdf9d4b",
     "base-drivers/km-mutations.json": "16cbcff5d338baaaaa37fae927d78e008eaf5ba541c29801c3b66510c892c537",
-    "tip-drivers/source-audit.json": "d102ab7c5409e2433cfbe6536655d29f997a3caff7a2179265e4b43f18073ec4",
+    "tip-drivers/source-audit.json": "97896290142a04d7cf3b2eee1e1e57a24d54c30a3d920b2b85039d63c423ad29",
     "tip-drivers/horizontal-driver.json": "5db3a9264506551d760f34e81137ba528177718489d92bc2feb3694594b7cc94",
     "tip-drivers/vertical-driver.json": "ee7dba7a50dfb80ceff910fc8c635acf8f9c7d0cb2b99dc66004d83cbfdf9d4b",
     "tip-drivers/km-mutations.json": "16cbcff5d338baaaaa37fae927d78e008eaf5ba541c29801c3b66510c892c537",
-    "base-acoustic/source-audit.json": "8aca1a0df468b9d3bf0a77d357fbc19f1e54b32fd4adb2b043d9c03a1778451d",
-    "base-acoustic/acoustic-published-default-proof.json": "e7439ed1c301248863ccc1f06345072448b34a0b481b893e825654fdc2f7466e",
-    "tip-acoustic/source-audit.json": "f4c7ed9e0d6f0b88b342c3c5eb3f59399a54bbb7e8d7b891e199c15c1e93b741",
-    "tip-acoustic/acoustic-published-default-proof.json": "f7a48864744769422169c8dc6331d561b92d588a10068ba234ead15db730a8f4"
+    "base-acoustic/source-audit.json": "fddb44d05137b6ab868f42789e0ba78ab357f620a55a79e3beaaf7b19b6cf550",
+    "base-acoustic/acoustic-published-default-proof.json": "3870da5a9fbef1155d4217122366cc2eeaf20789257f7ebab239a05c57199b49",
+    "tip-acoustic/source-audit.json": "32fe0ca909f0fdc8e1f9a88c6c077006ae12f9ae138ef0dd540fa149a2dd4a59",
+    "tip-acoustic/acoustic-published-default-proof.json": "ca0dd35476f86a33788a090cfb76912a6ff1e878006eab8ca9f1fd196ec5b9e3"
   },
   "capture_identity": {
     "device": "b'NVIDIA GeForce RTX 5070 Ti'",
@@ -113,12 +113,12 @@
   "moved_sources": {
     "gpuwm/core/dycore.py": {
       "sealed": {
-        "bytes": 253853,
-        "sha256": "fd19cd99d786d9cc2878741767ebb7f54fb3cf39bba57b7f1c1d1d4cac91e1dd"
-      },
-      "after": {
         "bytes": 254517,
         "sha256": "0938491e6f0525208d55a6c7e8d593b62a75418084fb988c2262952f8751f781"
+      },
+      "after": {
+        "bytes": 254812,
+        "sha256": "7a21590269ebcaaf8b32cfd0addcb36bda84a34e71d8dfbf1a961aaf637dd144"
       }
     }
   },

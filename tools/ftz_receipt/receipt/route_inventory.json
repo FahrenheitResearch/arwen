@@ -9,11 +9,11 @@
     "cupy.ReductionKernel",
     "cupy.cuda.compiler.compile_using_nvrtc"
   ],
-  "site_count": 354,
+  "site_count": 356,
   "site_count_by_kind": {
     "cupy.ElementwiseKernel": 30,
     "cupy.RawKernel": 43,
-    "cupy.RawModule": 196,
+    "cupy.RawModule": 198,
     "cupy.ReductionKernel": 11,
     "cupy.cuda.compiler.compile_using_nvrtc": 74
   },
@@ -24,7 +24,7 @@
     "package": {
       "cupy.ElementwiseKernel": 20,
       "cupy.RawKernel": 6,
-      "cupy.RawModule": 60,
+      "cupy.RawModule": 62,
       "cupy.ReductionKernel": 7,
       "cupy.cuda.compiler.compile_using_nvrtc": 40
     },
@@ -229,6 +229,22 @@
       "options_element_expressions": [],
       "options_are_literal": true,
       "text": "module = cp.RawModule(code=source, options=())"
+    },
+    {
+      "file": "gpuwm/core/diagnostics.py",
+      "line": 127,
+      "column": 13,
+      "surface": "package",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "_preparation_module",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "options",
+      "options": null,
+      "options_element_expressions": null,
+      "options_are_literal": false,
+      "text": "module = cp.RawModule(code=source, options=options)"
     },
     {
       "file": "gpuwm/core/dycore.py",
@@ -556,7 +572,23 @@
     },
     {
       "file": "gpuwm/core/microphysics.py",
-      "line": 1472,
+      "line": 482,
+      "column": 17,
+      "surface": "package",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "thompson_negative_vapour_fill",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "()",
+      "options": [],
+      "options_element_expressions": [],
+      "options_are_literal": true,
+      "text": "module = cp.RawModule(code=_THOMPSON_VAPOUR_FILL_SOURCE, options=())"
+    },
+    {
+      "file": "gpuwm/core/microphysics.py",
+      "line": 1667,
       "column": 21,
       "surface": "package",
       "constructor": "cp.ElementwiseKernel",
@@ -572,7 +604,7 @@
     },
     {
       "file": "gpuwm/core/microphysics.py",
-      "line": 1476,
+      "line": 1671,
       "column": 21,
       "surface": "package",
       "constructor": "cp.ElementwiseKernel",
@@ -724,7 +756,7 @@
     },
     {
       "file": "gpuwm/core/nest_interp.py",
-      "line": 261,
+      "line": 269,
       "column": 10,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -732,16 +764,10 @@
       "enclosing": "_nest_module",
       "takes_caller_options": true,
       "options_argument_present": true,
-      "options_expression": "(\"-std=c++17\", \"-fmad=false\")",
-      "options": [
-        "-std=c++17",
-        "-fmad=false"
-      ],
-      "options_element_expressions": [
-        "\"-std=c++17\"",
-        "\"-fmad=false\""
-      ],
-      "options_are_literal": true,
+      "options_expression": "options",
+      "options": null,
+      "options_element_expressions": null,
+      "options_are_literal": false,
       "text": "mod = cp.RawModule(code=src,"
     },
     {
@@ -930,7 +956,7 @@
     },
     {
       "file": "gpuwm/core/physics.py",
-      "line": 1823,
+      "line": 1820,
       "column": 17,
       "surface": "package",
       "constructor": "cp.ElementwiseKernel",
@@ -946,7 +972,7 @@
     },
     {
       "file": "gpuwm/core/physics.py",
-      "line": 1838,
+      "line": 1835,
       "column": 17,
       "surface": "package",
       "constructor": "cp.ElementwiseKernel",
@@ -962,7 +988,7 @@
     },
     {
       "file": "gpuwm/core/physics.py",
-      "line": 1861,
+      "line": 1858,
       "column": 21,
       "surface": "package",
       "constructor": "cp.ElementwiseKernel",
@@ -1026,7 +1052,7 @@
     },
     {
       "file": "gpuwm/core/rrtmg_legacy.py",
-      "line": 1079,
+      "line": 1081,
       "column": 24,
       "surface": "package",
       "constructor": "_cc.compile_using_nvrtc",
@@ -3294,7 +3320,7 @@
     },
     {
       "file": "tests/test_mp8_frozen.py",
-      "line": 3047,
+      "line": 3064,
       "column": 8,
       "surface": "tests",
       "constructor": "cp.RawModule",

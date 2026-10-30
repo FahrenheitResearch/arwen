@@ -889,6 +889,9 @@ def renderer_candidates() -> tuple[Path, ...]:
     return _candidates(RENDERER_ENV, RENDERER_NAME)
 
 
+_ANNOUNCED_RENDERERS: set[Path] = set()
+
+
 def find_renderer() -> Path | None:
     """First existing candidate, or None.
 
@@ -906,7 +909,11 @@ def find_renderer() -> Path | None:
     override = os.environ.get(RENDERER_ENV)
     for candidate in renderer_candidates():
         if candidate.is_file():
-            return bridges.accept_resolved(candidate.resolve())
+            selected = bridges.accept_resolved(candidate.resolve())
+            if selected not in _ANNOUNCED_RENDERERS:
+                print(f"renderer: selected {selected}", file=sys.stderr)
+                _ANNOUNCED_RENDERERS.add(selected)
+            return selected
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{RENDERER_ENV} names a missing file: {candidate}.  "

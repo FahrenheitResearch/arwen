@@ -689,23 +689,20 @@ def _physics_interval_steps(minutes: float, dt: float | Fraction) -> int:
     """WRF ``MAX(NINT(minutes*60/dt), 1)`` interval in model steps.
 
     Integer-tick generalization (Phase-5 architecture section C): an
-    exact-rational ``fractions.Fraction`` dt divides EXACTLY with an
-    exactness assertion -- the experiment loader validates every cadence
-    as commensurate with its domain's step, so a non-integral quotient is
-    a hard error here, never a silent nint round.  A float dt keeps WRF's
-    REAL rounding (phys/module_physics_init.F STEPRA/STEPCU) bitwise for
-    every frozen single-domain profile; ``gpuwm.core.clock.resolve_clock``
-    asserts both paths agree per domain (F14 single timing authority).
+    exact-rational ``fractions.Fraction`` dt divides EXACTLY and rounds
+    the exact quotient as Fortran NINT does (half away from zero), so
+    ``cudt = 5`` at a 45 s step is 7 steps, as wrf.exe runs it; the
+    loader says so (:func:`gpuwm.experiment.wrf_physics_cadences`).  A
+    float dt keeps WRF's REAL rounding (phys/module_physics_init.F
+    STEPRA/STEPCU) bitwise for every frozen single-domain profile;
+    ``gpuwm.core.clock.resolve_clock`` asserts both paths agree per
+    domain (F14 single timing authority).
     """
     if minutes <= 0.0:
         return 1
     if isinstance(dt, Fraction):
         steps = Fraction(str(minutes)) * 60 / dt
-        if steps.denominator != 1:
-            raise ValueError(
-                f"physics cadence {minutes} min is not a whole number of "
-                f"model steps: dt = {dt} s exactly, quotient = {steps}.")
-        return max(int(steps), 1)
+        return max(int(steps + Fraction(1, 2)), 1)
     return max(int(np.floor(minutes * 60.0 / dt + 0.5)), 1)
 
 

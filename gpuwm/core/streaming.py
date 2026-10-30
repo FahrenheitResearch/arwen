@@ -3911,8 +3911,20 @@ def window_interval(interval, spec, *, width: int, seam: str = "zeros",
                     inert_boundary_table(want), inert_boundary_table(want)))
                 sides[side_name] = SideBoundary(value, tend, law)
         fields_out[name] = FieldBoundary(**sides)
-    return BoundaryInterval(interval.start_seconds, interval.end_seconds,
-                            fields_out)
+    out = BoundaryInterval(interval.start_seconds, interval.end_seconds,
+                           fields_out)
+    # The hydrometeor ring is held from the domain's WHOLE edge and this
+    # window serves its slice (lateral_bc._held_resident_interval): the
+    # domain interval and, per owned edge, the mass-grid slice.
+    my0, my1 = spec.cj0, spec.cj0 + spec.cny
+    mx0, mx1 = spec.ci0, spec.ci0 + spec.cnx
+    object.__setattr__(out, "ring_window", (interval, {
+        side_name: ((slice(None), slice(my0, my1), slice(None))
+                    if side_name in ("west", "east") else
+                    (slice(None), slice(None), slice(mx0, mx1)))
+        for side_name in ("west", "east", "south", "north")
+        if owns[side_name]}))
+    return out
 
 
 def tile_seam_sides(bnd, spec) -> tuple[str, ...]:
@@ -5023,6 +5035,9 @@ def _twin_rrtmg_legacy(scheme, cls, lat, lon):
                aer_opt=scheme.aer_opt,
                aer3_type_source=getattr(scheme, "aer3_type_source", "rural"),
                trace_gas_overrides=getattr(scheme, "trace_gas_overrides", None),
+               # WRF's ghg_input (2.9.10): a buffer's twin reads the same
+               # CAMtr gases as the domain's adapter.
+               ghg_input=getattr(scheme, "ghg_input", 0),
                **smoke_options)
 
 
@@ -5112,7 +5127,8 @@ _TWIN_RECIPES = {
                               "p_top", "column_chunk", "ozone_parent",
                               "ozone_routing", "o3input", "longwave",
                               "shortwave", "aer_opt", "trace_gas_overrides", "smoke_provider",
-                              "aer3_type_source", "transported_smoke"}),
+                              "aer3_type_source", "transported_smoke",
+                              "ghg_input"}),
         # WRF's radiation call counter; the domain's adapter has stepped
         # when a buffer is built mid-run, a fresh twin has not, and that
         # difference is not dropped policy.

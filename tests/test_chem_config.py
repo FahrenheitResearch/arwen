@@ -173,7 +173,10 @@ def test_the_chem_block_is_appended_after_every_older_field():
              # 2.9.7, keyword-only: the HRRR v4 climate statistics
              # (lane/hrrr-v4-clwrf) and tc/nest's fixed-frame archive.
              "output_diagnostics", "diag_int", "wind_int",
-             "nest_accumulation_archive"]
+             "nest_accumulation_archive",
+             # 2.9.10, keyword-only: WRF's ghg_input (fix/wrf461-2dom-exact,
+             # placed last by d1e35bf2da).
+             "ghg_input"]
     assert names[-len(later):] == later
     names = names[:-len(later)]
     # The 2.9.4 capabilities campaign's keyword-only keys follow the fire

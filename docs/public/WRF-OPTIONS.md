@@ -141,7 +141,7 @@ WRF source: https://github.com/wrf-model/WRF at v4.7.1 (f52c197ed39d).
 | value | WRF option | gpuwm |
 |---|---|---|
 | `0` | no surface-layer | imports |
-| `1` | Revised MM5 Monin-Obukhov scheme (Jimenez, renamed in v3.6) | imports |
+| `1` | Revised MM5 Monin-Obukhov scheme (Jimenez, renamed in v3.6): WRF's option 1 since v3.6; not the same scheme as 91 | imports |
 | `2` | Monin-Obukhov (Janjic) scheme | imports |
 | `3` | NCEP Global Forecast System scheme | refused: &physics bl_pbl_physics = 3: no ratified gpuwm mapping (implemented: [0, 1, 2, 5, 9, 11, 900, 901]). The GFS non-local PBL (WRF gfsscheme) is not ported in this release, nor its surface layer (sf_sfclay_physics = 3). Nothing is substituted for it; choose one of the implemented values. |
 | `4` | QNSE surface layer | refused: &physics bl_pbl_physics = 4: no ratified gpuwm mapping (implemented: [0, 1, 2, 5, 9, 11, 900, 901]). The QNSE PBL (WRF qnsepblscheme) is not ported in this release, nor its surface layer (sf_sfclay_physics = 4). Nothing is substituted for it; choose one of the implemented values. |
@@ -149,7 +149,7 @@ WRF source: https://github.com/wrf-model/WRF at v4.7.1 (f52c197ed39d).
 | `7` | Pleim-Xiu surface layer | refused: &physics sf_sfclay_physics = 7: no gpuwm mapping (implemented: [0, 1, 2, 5, 91]). The Pleim-Xiu surface layer (WRF pxsfcscheme) is not ported in this release. Nothing is substituted for it; choose one of the implemented values. |
 | `10` | TEMF surface layer | refused: &physics bl_pbl_physics = 10: no ratified gpuwm mapping (implemented: [0, 1, 2, 5, 9, 11, 900, 901]). The TEMF PBL (WRF temfpblscheme) is not ported in this release, nor its surface layer (sf_sfclay_physics = 10). Nothing is substituted for it; choose one of the implemented values. |
 | `89` | idealscmsfcscheme | refused: &physics sf_sfclay_physics = 89: no gpuwm mapping (implemented: [0, 1, 2, 5, 91]). The idealized single-column surface (WRF idealscmsfcscheme) needs WRF's single-column test case, which this engine does not run. Nothing is substituted for it; choose one of the implemented values. |
-| `91` | Old MM5 scheme (previously option 1) | imports |
+| `91` | Old MM5 scheme (previously option 1): the pre-v3.6 MM5 scheme, a different scheme from today's option 1 (revised MM5) | imports |
 
 ## `sf_surface_physics`
 

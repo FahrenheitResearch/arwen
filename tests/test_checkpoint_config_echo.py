@@ -126,6 +126,9 @@ MOVED = {
 #: The keys an echo at every default leaves out.
 DEFAULT_OFF = frozenset({
     "output_diagnostics", "diag_int", "wind_int",
+    # 2.9.10: WRF's ghg_input at the engine's fixed gases (0), absent as in
+    # a header written before the key (checkpoint_identity).
+    "ghg_input",
     # The ocean mixed layer (2.9.1) off: dropped, as in a header written
     # before the keys existed.
     "sf_ocean_physics", "oml_hml0", "oml_gamma", "oml_relaxation_time",

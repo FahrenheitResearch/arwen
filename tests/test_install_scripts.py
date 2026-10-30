@@ -86,7 +86,7 @@ if kind == 'git':
                  'tools/nextgen_forcing', 'tools/nextgen_verify', 'tools/hydro_world',
                  'tools/hydro_world_params', 'tools/nextgen_reservoir_prepare',
                  'tools/hydro_world_init', 'tools/ocean_prepare',
-                 'tools/rw-bathy', 'tools/nextgen_output'):
+                 'tools/rw-bathy', 'tools/nextgen_output', 'tools/rw_icechunk'):
         (checkout / name).mkdir(parents=True, exist_ok=True)
         if name.startswith('tools/'):
             # The real manifests: the installers read their rust-version.
@@ -468,7 +468,7 @@ def test_clean_clone_installs_matching_companion_then_engine_and_builds_tui(tmp_
     built = [Path(row['cwd']).name for row in rows
              if row['kind'] == 'cargo' and row['args'][0] == 'build']
     assert built == ['grib1_bridge', *([] if no_render else ['rustwx']), 'arwen-tui', 'zarr_bridge',
-                     'rw_wps', 'region_global_dealias', 'nextgen_hydrofabric',
+                     'rw_icechunk', 'rw_wps', 'region_global_dealias', 'nextgen_hydrofabric',
                      'nextgen_forcing', 'nextgen_verify', 'hydro_world', 'hydro_world_params', 'nextgen_reservoir_prepare', 'hydro_world_init',
                      'ocean_prepare', 'rw-bathy', 'nextgen_output']
     # A workspace the bundle roster builds from and the installer skips leaves

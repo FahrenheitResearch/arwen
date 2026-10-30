@@ -3,7 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 
-SOURCE_EXTENSION_SHA = 'acfe924f5b9154bc32bd885064037a0df733918041551f8f252d0692da46ff79'
+SOURCE_EXTENSION_SHA = '82db65e6998a4c0304cd783bc09c02ee44e204a7c084570ce0ac188ba16dad48'
 DIFFUSION_CACHE_EXTENSION_SHA = "2d0a03fbffcec53d12d692c524e3fed01611677a08f677c2ff76f39214549c79"
 
 PROOF_SHAS = {
@@ -105,7 +105,10 @@ def _source_extension(root, name, before, after, schema=None):
         # hooks): base 2.9.6 (e5b0c7ff52), zero differing words in all three
         # families, dycore.py re-earned as a moved source.  Previously
         # 89107bdeb2 (the 2.9.4 slimming).
-        assert replay["base"] == "e5b0c7ff52b02bf12bd0909f93eb37569c7ac079"
+        # Re-measured for 2.9.10 fix batch 9 (c49be92105, the WRF-file nest door, moved dycore.py: strict
+        # per-domain p_perturbation): base 2.9.10 pass 5 (30c12f7ae6), zero differing words in all three
+        # families on an RTX 5070 Ti. Previously e5b0c7ff52 (2.9.6).
+        assert replay["base"] == "30c12f7ae6e7e3703d57a5e03802106efc2daf89"
         assert replay["measurements"] == measured["measurements"]
         assert replay["numerics"] == "strict"
         assert replay["generator"] == "tools/assembled_legacy_replay.py"

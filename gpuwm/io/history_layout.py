@@ -650,7 +650,11 @@ def wrf_file_grid_history_fields(bundle, cfg=None) -> dict[str, np.ndarray]:
         # These slots retain WRF's initialized values while their producer
         # is disabled. Active producers never acquire a fabricated zero.
         surface = (int(cfg.ny), int(cfg.nx))
-        out["NEST_POS"] = np.zeros(surface, np.float32)
+        # WRF's mark_domain sets 9021000 over each two-way nest at its
+        # start (gpuwm.ingest.wrfinput_nest_initial.feed_back_file_fields).
+        out["NEST_POS"] = (np.asarray(raw["NEST_POS"], np.float32)
+                           if "NEST_POS" in raw
+                           else np.zeros(surface, np.float32))
         out["SST_INPUT"] = np.zeros(surface, np.float32)
         # output_wrf.F:1021 temporarily sets the history flag to zero;
         # :1560 restores the input flag after writing. Do not alter raw.

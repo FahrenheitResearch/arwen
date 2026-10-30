@@ -80,11 +80,13 @@ class NestCoupler(Protocol):
         """Read the child only and write restricted data into scratch."""
         ...
 
-    def feedback_commit(self, node: DomainNode) -> None:
-        """PARENT MUTATED: masked merge plus ``ht_coarse`` bookkeeping."""
+    def feedback_commit(self, node: DomainNode, *, start: bool = False) -> None:
+        """PARENT MUTATED: masked merge plus ``ht_coarse`` bookkeeping.
+
+        ``start`` marks the nest-start transaction (med_nest_initial)."""
         ...
 
-    def feedback_finalize(self, node: DomainNode) -> None:
+    def feedback_finalize(self, node: DomainNode, *, start: bool = False) -> None:
         """PARENT MUTATED: restore parent halo/diagnostic validity."""
         ...
 
@@ -625,6 +627,10 @@ def restart_identity_payload(exp) -> dict:
         run = domain.get("run", {})
         drop_default_diffusion_selectors(run)
         drop_default_spp_selectors(run)
+        # ghg_input, absent-stays-absent: 0 is the fixed-gas radiation
+        # every fingerprint written before the key ran; 1 binds.
+        if not run.get("ghg_input", 0):
+            run.pop("ghg_input", None)
         # The historical scalar operator was PD. Its unchanged default
         # leaves old tree checkpoint identities intact; TKE activation binds.
         if run.get("scalar_adv_opt", 1) == 1:
@@ -1357,8 +1363,8 @@ def build_experiment(exp, case_data) -> ExperimentState:
         if exp.feedback == 1 and node._started:
             initial = FeedbackScratch()
             node.coupler.feedback_prepare(node, initial)
-            node.coupler.feedback_commit(node)
-            node.coupler.feedback_finalize(node)
+            node.coupler.feedback_commit(node, start=True)
+            node.coupler.feedback_finalize(node, start=True)
 
     built = ExperimentState(
         root=root, nodes_by_grid_id=MappingProxyType(nodes),
@@ -2064,8 +2070,8 @@ def execute_experiment(
         if exp.feedback == 1:
             initial = FeedbackScratch()
             node.coupler.feedback_prepare(node, initial)
-            node.coupler.feedback_commit(node)
-            node.coupler.feedback_finalize(node)
+            node.coupler.feedback_commit(node, start=True)
+            node.coupler.feedback_finalize(node, start=True)
         if rebound is not None:
             # After the feedback seed, as build_experiment's t = 0 children
             # are seeded before the route attaches their steppers.
@@ -2168,6 +2174,8 @@ def execute_experiment(
                 # One read for every scheme site of this step; raises the
                 # first site's own refusal.  Before anything downstream.
                 step_ledger.drain()
+            from gpuwm.core.nest_round_trip import th_phy_m_t0_after_step
+            th_phy_m_t0_after_step(node)
             refresh_model_time(node.state, clock, after_step=True)
             # Scientific accumulators see every committed domain step. This
             # is not the best-effort telemetry seam below: losing a wind
@@ -2352,7 +2360,18 @@ def execute_experiment(
             if validators:
                 validators[grid_id].require_healthy(
                     phase=f"pre-history.d{grid_id:02d}")
-            history_handler(model, model.node(grid_id), ticks)
+            node = model.node(grid_id)
+            from gpuwm.wrf_exact import ENABLED as wrf_exact
+            if wrf_exact and node.parent is not None:
+                # WRF writes a nest's frame at an instant it shares with its
+                # parent after the parent's next med_nest_force, whose
+                # couple/uncouple round trip the frame then carries
+                # (gpuwm.core.nest_round_trip.round_tripped_frame_fields).
+                node.state._wrf_frame_round_trip_due = (
+                    int(node.clock.ticks) == int(node.parent.clock.ticks)
+                    and int(node.clock.ticks) < int(node.clock.run_ticks))
+                node.state._wrf_round_trip_run = node.cfg.run
+            history_handler(model, node, ticks)
         if io_manager is not None:
             status.pending_d2h = int(io_manager.pending)
 

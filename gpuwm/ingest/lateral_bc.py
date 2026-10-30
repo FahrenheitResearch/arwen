@@ -454,6 +454,10 @@ class _DeviceLateralBoundaries:
     #: the owning state by ``_active_device_interval`` before the nested
     #: interval is served.
     nested_reload: object | None = None
+    #: ``(id(host interval), external_reload_count)`` of every resident
+    #: interval whose hydrometeor ring :func:`_held_resident_interval` has
+    #: held in place.
+    ring_held: set = field(default_factory=set)
     #: What the packed chem boundary rows (``lbc_chem_*`` slots, see
     #: :func:`chem_boundary_rows`) were cut from: the served interval and
     #: the reload count.  A re-attach builds a new record, so a new forcing
@@ -915,8 +919,206 @@ def _active_device_interval(state, cfg):
                 resident.clock.dt_fp32, 0.0)   # LIVE
     interval, dtbc = _served_external_interval(state, resident)
     device, offset = _evaluate_device_interval(
-        state, _resident_interval(state, interval), dtbc)
+        state, _held_resident_interval(state, cfg, interval), dtbc)
     return (device, offset, lateral_boundary_clock_dt(cfg), cfg.spec_exp)
+
+
+#: The diameter of a deep convective cell, 10-25 km.  A hydrometeor mass
+#: narrower than this along the edge is a single cell, which an hourly
+#: forcing frame catches at one place for minutes; see
+#: :func:`hold_hydrometeor_ring_envelope`.
+RING_CELL_SCALE_M = 25_000.0
+
+
+def ring_cell_radius(cfg) -> int:
+    """Half the cell scale in grid columns along the edge (at least 1)."""
+    dx = float(getattr(cfg, "dx", 0.0) or 0.0)
+    if not (np.isfinite(dx) and dx > 0.0):
+        raise ValueError("a specified hydrometeor ring needs the grid spacing")
+    return max(1, int(np.ceil(0.5 * RING_CELL_SCALE_M / dx)))
+
+
+def _erode_along_edge(a, side, radius, xp):
+    """Minimum over ``radius`` columns either way ALONG the edge.
+
+    West/east tables are ``(..., nz, ny, width)``, south/north
+    ``(..., nz, width, nx)``; the window is clipped at the ends.
+    """
+    axis = a.ndim - 2 if side in ("west", "east") else a.ndim - 1
+    out = a.copy()
+    n = a.shape[axis]
+    for shift in range(1, min(int(radius), n - 1) + 1):
+        ahead = [slice(None)] * a.ndim
+        behind = [slice(None)] * a.ndim
+        ahead[axis], behind[axis] = slice(shift, None), slice(None, n - shift)
+        lo = out[tuple(behind)]
+        xp.minimum(lo, a[tuple(ahead)], out=lo)
+        hi = out[tuple(ahead)]
+        xp.minimum(hi, a[tuple(behind)], out=hi)
+    return out
+
+
+def hold_hydrometeor_ring_envelope(get, names, duration, radius, xp) -> int:
+    """Serve each ring hydrometeor mass only where the forcing resolves it.
+
+    THE DEFECT.  A source's hydrometeor masses ride the root's specified
+    ring (:mod:`gpuwm.boundary_fields`), linear in time between forcing
+    frames an hour apart.  A convective cell is at a given boundary point
+    for minutes: in hourly frames it is there in one frame and gone in the
+    next, and the linear interval turned it into a source fixed at that
+    point that poured its snow and rain into the domain for the whole hour.
+    The relaxation zone resupplied it every step with no updraft under it,
+    and the mass streamed downwind as a straight band at full strength from
+    the edge.  On the HRRR-forced Toronto 2.25 km parent of 29 Oct 12Z the
+    west ring's column-maximum snow ramped from 0.78 to 2.21 g/kg between
+    20Z and 21Z at one row and fed a 40-46 dBZ band (melting snow at
+    2.7 km, carried by the 24 m/s westerly) running 150-250 km due east;
+    five to seven such bands stood at fixed latitudes where HRRR and MRMS
+    had separate cells.
+
+    THE RULE.  The ring serves, for the whole interval, a mass that BOTH
+    frames bracketing it carry, over a stretch of the edge at least a
+    convective cell wide (:data:`RING_CELL_SCALE_M`): the smaller of the two
+    frames at each point (persists across the hour), then the minimum over
+    ``radius`` columns either way along the edge (wider than a cell),
+    with zero tendency.  The holding by time alone left dense convection
+    feeding the bands (1.54 g/kg where cells of the two frames overlapped);
+    the two together serve 0.12.  Snow organised wider than a cell and
+    lasting the hour -- the analysed stratiform snow this ring exists to
+    supply (a three-hour HRRR mountain winter case held 12.8 million t of
+    snow after two hours without it, 26.9 with it) -- is served, less the
+    part that changes over the hour and a cell's half-width at its edges.
+    Each paired number moment keeps the mean particle mass of the frame its
+    mass was held from, so the ring's sizes stay the ones the cold start
+    gave.
+
+    ``get(name, side, item)`` returns the writable served table
+    (``item`` ``"value"`` or ``"tendency"``, the value at the interval
+    start, coupled as the ring stores it); ``names`` is the interval's field
+    inventory and ``duration`` its length in seconds.  The served tables
+    are rewritten in place, so the host tables, the prepared cache and its
+    digests are untouched.  Returns the number of masses held.
+    """
+    from gpuwm.boundary_fields import BOUNDARY_HYDROMETEOR_MASSES
+    from gpuwm.ingest.handover_numbers import PAIRED_NUMBER_OF_MASS
+
+    duration = float(duration)
+    if not (np.isfinite(duration) and duration > 0.0):
+        return 0
+    names = set(names)
+    span = np.float32(duration)
+    held = 0
+    for mass in BOUNDARY_HYDROMETEOR_MASSES:
+        if mass not in names:
+            continue
+        number = PAIRED_NUMBER_OF_MASS.get(mass)
+        if number not in names:
+            number = None
+        for side in ("west", "east", "south", "north"):
+            value, tendency = get(mass, side, "value"), get(mass, side, "tendency")
+            end = value + tendency * span
+            later = end < value
+            frame = xp.maximum(xp.where(later, end, value), 0)
+            served = _erode_along_edge(frame, side, radius, xp)
+            if number is not None:
+                n_value = get(number, side, "value")
+                n_tendency = get(number, side, "tendency")
+                n_frame = xp.maximum(
+                    xp.where(later, n_value + n_tendency * span, n_value), 0)
+                positive = frame > 0
+                n_value[...] = xp.where(
+                    positive, n_frame * (served / xp.where(positive, frame, 1)), 0)
+                n_tendency[...] = 0
+            value[...] = served
+            tendency[...] = 0
+        held += 1
+    return held
+
+
+#: Every table :func:`hold_hydrometeor_ring_envelope` may rewrite: the five
+#: masses and the number moment paired with each
+#: (``gpuwm.ingest.handover_numbers.PAIRED_NUMBER_OF_MASS``).
+_HYDROMETEOR_RING_FIELDS = frozenset(
+    ("qc", "qr", "qi", "qs", "qg", "nc", "nr", "ni", "ns", "ng"))
+
+
+#: The last domain interval :func:`_held_host_sides` held, and its tables:
+#: every tile or rank of a step serves the same interval, so one is enough.
+_HELD_HOST_CACHE: dict = {}
+
+
+def _held_host_sides(interval, radius):
+    """``{(name, side, item): float32 array}``: ``interval``'s hydrometeor
+    ring tables as the card is given them (the attach's float32 rounding of
+    the host table), held by :func:`hold_hydrometeor_ring_envelope`.
+
+    Held on the host, from the WHOLE edge of the domain's own interval, so
+    a resident run, every tile of a streamed one and every rank of a split
+    one serve the same bytes: a tile's window would otherwise erode its
+    edge without the columns beyond its window.
+    """
+    key = (id(interval), int(radius))
+    entry = _HELD_HOST_CACHE.get("entry")
+    if entry is not None and entry[0] == key and entry[1] is interval:
+        return entry[2]
+    names = [name for name in interval.fields if name in _HYDROMETEOR_RING_FIELDS]
+    if any(getattr(interval.fields[name], side).time_law is not None
+           for name in names for side in ("west", "east", "south", "north")):
+        raise RuntimeError(
+            "a hydrometeor ring table carries a nonlinear time law; its two "
+            "frames cannot be read off value + tendency * duration")
+    tables = {(name, side, item): np.array(getattr(getattr(interval.fields[name], side), item),
+                                           dtype=np.float32)
+              for name in names for side in ("west", "east", "south", "north")
+              for item in ("value", "tendency")}
+    hold_hydrometeor_ring_envelope(
+        lambda name, side, item: tables[(name, side, item)], names,
+        float(interval.end_seconds) - float(interval.start_seconds), radius, np)
+    _HELD_HOST_CACHE["entry"] = (key, interval, tables)
+    return tables
+
+
+def _held_resident_interval(state, cfg, interval):
+    """The resident tables of ``interval``, its hydrometeor ring held.
+
+    Written over the uploaded tables once per upload (the eager tables once,
+    the streamed slot at every reload), before any time law is evaluated
+    from them, with the grid spacing of ``cfg``.  A tile's or rank's window
+    (``streaming.window_interval``) takes its slice of the held domain edge;
+    its seam sides stay inert.
+    """
+    device = _resident_interval(state, interval)
+    if not any(name in _HYDROMETEOR_RING_FIELDS for name in device.fields):
+        return device
+    resident = state._lateral_boundary_device
+    key = (id(interval), resident.external_reload_count)
+    if key in resident.ring_held:
+        return device
+    window = getattr(interval, "ring_window", None)
+    source, owned = (interval, None) if window is None else window
+    held = _held_host_sides(source, ring_cell_radius(cfg))
+    if getattr(state, "_host_setup_state", False):
+        xp = np
+    else:
+        import cupy as cp
+        xp = cp
+    for (name, side, item), table in held.items():
+        if name not in device.fields:
+            continue
+        if owned is not None:
+            if side not in owned:
+                continue   # an inert seam
+            table = table[owned[side]]
+        target = getattr(getattr(device.fields[name], side), item)
+        if target.shape != table.shape:
+            raise RuntimeError(
+                f"held hydrometeor ring table {name}/{side} is {table.shape}, "
+                f"the served one {target.shape}")
+        target[...] = xp.asarray(table)
+    if resident.streaming_external:
+        resident.ring_held.clear()
+    resident.ring_held.add(key)
+    return device
 
 
 def _served_external_interval(state, resident):
@@ -2579,7 +2781,8 @@ def apply_state_boundary_values(state, cfg, elapsed_seconds=None) -> None:
              else float(elapsed_seconds))
         interval = boundaries.interval_at(t)
         device_interval, dtbc = _evaluate_device_interval(
-            state, _resident_interval(state, interval), t - interval.start_seconds)
+            state, _held_resident_interval(state, cfg, interval),
+            t - interval.start_seconds)
     # The legacy path coupled every full field using old MU, installed MU,
     # then uncoupled every full field using new MU.  The fused finalizers
     # retain that roundoff-visible operation order without materializing the

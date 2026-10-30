@@ -37,7 +37,9 @@ STREAM_DOORS = {"rw_igra2", "rw_amv", "rw_ndbc", "rw_gnssro", "rw_wis2", "rw_pre
                 # Post-2.9.4: native Rust coupled hydro output, fetched on first use.
                 "rw_nextgen_output",
                 # 2.9.9 (PyPI per-file limit): the fixed-ladder probability renderer, which no forecast reaches.
-                "rw_probgrid"}
+                "rw_probgrid",
+                # 2.9.10 (PyPI per-file limit): the opt-in Icechunk writer and the gpuwm-hex RRFS init binaries.
+                "rw_icechunk", "rw_mpas_init_v831", "rw_mpas_gsl_oro"}
 PLATFORMS = ("linux-x86_64", "win-x86_64")
 REVISION = "a" * 40
 FETCH = "gpuwm fetch-bridges"

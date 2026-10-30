@@ -581,7 +581,11 @@ def test_the_on_demand_set_is_read_from_the_tagged_declaration(publication):
                                                     # Post-2.9.4 native Rust hydro output.
                                                     "rw_nextgen_output",
                                                     # 2.9.9 (PyPI per-file limit): the probability renderer.
-                                                    "rw_probgrid"} == {
+                                                    "rw_probgrid",
+                                                    # 2.9.10 (PyPI per-file limit): the Icechunk writer and
+                                                    # the gpuwm-hex RRFS init binaries.
+                                                    "rw_icechunk", "rw_mpas_init_v831",
+                                                    "rw_mpas_gsl_oro"} == {
         a.name for a in bridge_assets.on_demand_artifacts()}
     assert {"rw_simradar", "rw_mlexport", "rw_globe_pack"} <= {a.name for a in bridge_assets.wheel_artifacts()}
 

@@ -846,7 +846,9 @@ class _PostedMappedSource:
         self._scratch = self.output_root.parent / (
             f".posted-{uuid.uuid4().hex[:8]}")
         self.frames = PostedFrames(self.valid_times, self._locate,
-                                   prefetch=self.prefetch_through)
+                                   prefetch=self.prefetch_through,
+                                   decoded=lambda: self._next,
+                                   posted=self.posted_count)
 
     # -- reading ---------------------------------------------------------
 
@@ -981,6 +983,21 @@ class _PostedMappedSource:
                     end += 1
                 self._decode_batch(self._next, end)
                 self._next = end + 1
+
+    def posted_count(self) -> int:
+        """How many of the window's leads, from the first, have posted now.
+
+        Read from the markers alone, waiting for none: what a start-time
+        reader may take without holding the head for a later lead (the
+        inland water's daily mean, gpuwm.ingest.horiz).
+        """
+
+        count = 0
+        for lead in self.leads:
+            if lead not in self.markers and self.posted.marker(lead) is None:
+                break
+            count += 1
+        return count
 
     def prepare_independent_times(self) -> bool:
         """Whether an already posted window may build its times in parallel.
@@ -3668,6 +3685,7 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
             ),
             stock_wrf_export=c.stock_wrf_export,
             head_artifacts=writer.root / HIERARCHY_HEAD_DIRNAME,
+            snapshots=c.snapshots,
         )
         hierarchy_seconds = (head_hierarchy_seconds
                              + time.perf_counter() - hierarchy_seal_started)

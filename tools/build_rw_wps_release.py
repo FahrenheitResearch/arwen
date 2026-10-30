@@ -1887,6 +1887,7 @@ gpuwm = [
   "data/noah_tables/*.TBL",
   "data/noah_tables/*.md",
   "data/surface_ocean.json",
+  "data/output_formats.json",
   "data/chem/*.json",
   "data/chem/*.md",
   "data/chem/species/*.json",
@@ -2040,6 +2041,11 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
     # forecast allocation, including in the preparation-only package.
     _copy_source(REPO / "gpuwm" / "data" / "surface_ocean.json",
                  package / "data" / "surface_ocean.json")
+    # The output format table (Icechunk, 2.9.10): gpuwm.io.history_selection
+    # reads it through gpuwm.output_formats at import, so every config load
+    # does; without it the staged package could not load a configuration.
+    _copy_source(REPO / "gpuwm" / "data" / "output_formats.json",
+                 package / "data" / "output_formats.json")
     # The ocean product rows (2.9.4 ocean lanes): gpuwm.io.wrf_output_schema
     # merges them into the history vocabulary at import, so reading any
     # config with an [output] block reads this file.

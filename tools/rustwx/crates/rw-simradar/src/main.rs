@@ -36,7 +36,63 @@ fn read_scene(
     let mut fields =
         read_wrf_radar_fields_for_config(&file, &scene.source_identity, scene.time_index, config)?;
     atmosphere::native_winds(&file, scene.time_index, &mut fields)?;
+    if fields.ref_source == bowecho_simradar::REFL_10CM_SOURCE {
+        let (nx, ny, nz) = (fields.nx, fields.ny, fields.nz);
+        unwritten_reflectivity_ring(&mut fields.dbz, nx, ny, nz);
+    }
     Ok(fields)
+}
+
+/// Marks missing (NaN) the cells of the domain's outermost row and column
+/// whose `REFL_10CM` is exactly 0, the array's initial value; returns how many.
+///
+/// `REFL_10CM` is history-only (WRF Registry `hdu`, initialised 0) and the
+/// microphysics fills it on the columns it computes. The domain's boundary
+/// ring is not one of them, so those cells read exactly 0 dBZ in every frame
+/// (gpuwm writes WRF's zeros there as well: `gpuwm/core/refl.py`
+/// `analysis_refl_10cm`). Microphysics floors its own values at -35 dBZ or
+/// another scheme floor, so no interior cell is exactly 0 in a real frame.
+/// Scanned as an echo, 0 dBZ is above the -30 dBZ floor, so every gate on the
+/// ring kept its radial velocity and the PPI drew a one-cell line along the
+/// domain's edges.
+///
+/// THE BREAKAGE THIS PREVENTS (WOOF run_5d864756da757b75, 2026-10-29: 2.25 to
+/// 0.75 km, 5-min quick look with "Simulated radar every N min"): the
+/// velocity PPIs of the quick-look volumes (KMQT 01:05Z and 01:10Z) showed a
+/// +/-20 m/s line down d02's west edge and along its south edge. A quick-look
+/// frame carries no hydrometeors, so its radar reflectivity is the frame's
+/// `REFL_10CM`; a full frame's comes from the hydrometeors on every cell and
+/// was clean. Winds on the ring match the cells beside them.
+///
+/// `sample_column` drops a stencil column whose reflectivity is not finite,
+/// so a gate at the edge samples the interior columns beside it. A ring cell
+/// holding any other value (an echo a model did write there) is kept.
+fn unwritten_reflectivity_ring(dbz: &mut [f32], nx: usize, ny: usize, nz: usize) -> usize {
+    if nx == 0 || ny == 0 || dbz.len() != nx * ny * nz {
+        return 0;
+    }
+    let mut marked = 0;
+    let mut mark = |cell: &mut f32| {
+        if *cell == 0.0 {
+            *cell = f32::NAN;
+            marked += 1;
+        }
+    };
+    for plane in dbz.chunks_exact_mut(nx * ny) {
+        for j in [0, ny - 1] {
+            plane[j * nx..(j + 1) * nx].iter_mut().for_each(&mut mark);
+            if ny == 1 {
+                break;
+            }
+        }
+        for j in 1..ny.saturating_sub(1) {
+            mark(&mut plane[j * nx]);
+            if nx > 1 {
+                mark(&mut plane[j * nx + nx - 1]);
+            }
+        }
+    }
+    marked
 }
 
 /// The atmosphere bytes one history's scene holds, from its header alone.
@@ -584,6 +640,36 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unwritten_reflectivity_ring_is_missing_and_echoes_stay() {
+        // Two levels of a 4 x 3 grid as WRF writes REFL_10CM: interior cells
+        // at the scheme floor or an echo, the ring at the initial 0, except
+        // one ring cell an echo reached (12.5) and one at the floor (-35).
+        let (nx, ny, nz) = (4, 3, 2);
+        let mut dbz = vec![0.0f32; nx * ny * nz];
+        for k in 0..nz {
+            dbz[k * nx * ny + nx + 1] = -35.0;
+            dbz[k * nx * ny + nx + 2] = 22.0;
+        }
+        dbz[3] = 12.5; // level 0, south row, east corner
+        dbz[nx * ny + nx] = -35.0; // level 1, west column, middle row
+        let marked = crate::unwritten_reflectivity_ring(&mut dbz, nx, ny, nz);
+        assert_eq!(marked, 2 * 10 - 2);
+        for k in 0..nz {
+            let plane = &dbz[k * nx * ny..(k + 1) * nx * ny];
+            assert_eq!(plane[nx + 1], -35.0);
+            assert_eq!(plane[nx + 2], 22.0);
+        }
+        assert_eq!(dbz[3], 12.5);
+        assert_eq!(dbz[nx * ny + nx], -35.0);
+        assert!(dbz[0].is_nan() && dbz[nx * ny - 1].is_nan() && dbz[nx * ny + nx + 3].is_nan());
+        // A shape that does not match the array is left alone.
+        let mut other = vec![0.0f32; 5];
+        let marked = crate::unwritten_reflectivity_ring(&mut other, nx, ny, nz);
+        assert_eq!(marked, 0);
+        assert!(other.iter().all(|v| *v == 0.0));
+    }
+
     #[test]
     fn ppi_fields_carry_the_manifest_field_names() {
         for &field in crate::ppi::PPI_FIELDS {

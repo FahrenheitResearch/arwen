@@ -145,6 +145,7 @@ _PROVIDERS: dict[str, tuple[str, ...]] = {
     # earth2studio interpreter GPUWM_EARTH2_PYTHON names -- see
     # _OPTIONAL_BY_DESIGN.
     "earth2studio": ("earth2studio",),
+    "hexcore": ("gpuwm-hex",),
     "torch": ("torch",),
     "torch_harmonics": ("torch-harmonics",),
     "xarray": ("xarray",),
@@ -236,6 +237,12 @@ _EARTH2_INTERPRETER = (
 )
 
 _OPTIONAL_BY_DESIGN: dict[str, str] = {
+    "hexcore": (
+        "gpuwm/output_formats.py imports hexcore.forecast_door only for a store "
+        "whose engine is gpuwm-hex (self.engine == 'gpuwm-hex'), i.e. on a "
+        "machine where gpuwm-hex wrote the run; gpuwm-hex depends on gpuwm, not "
+        "the reverse, and an ArWen store never reaches the import."
+    ),
     "earth2studio": _EARTH2_INTERPRETER,
     "torch": _EARTH2_INTERPRETER,
     "xarray": _EARTH2_INTERPRETER,

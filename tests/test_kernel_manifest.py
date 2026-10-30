@@ -516,7 +516,11 @@ def test_option_tuples_are_per_site_and_not_one_global_flags_string():
                 recorded.setdefault(path, []).append(ast.unparse(options))
     nest = recorded["gpuwm/core/nest_interp.py"]
     shortwave = recorded["gpuwm/core/rrtmg_sw.py"]
-    assert nest == ["('-std=c++17', '-fmad=false')"]
+    # Since aefc5a20 the nest loader builds its option tuple once (nest
+    # preparation adds a define) and records the same name it compiles with;
+    # the site's own -fmad=false is that tuple's literal start.
+    assert nest == ["options"]
+    assert 'options = ("-std=c++17", "-fmad=false")' in _site_text("gpuwm/core/nest_interp.py")
     assert shortwave == ["('-std=c++17', '--ftz=false')"]
     assert nest != shortwave
     flattened = [option for options in recorded.values() for option in options]
@@ -532,8 +536,8 @@ def test_control_a_site_that_stops_recording_is_caught():
     path = "gpuwm/core/nest_interp.py"
     text = _site_text(path)
     mutated = text.replace(
-        '    record_module("gpuwm.core.nest_interp:nest", source=src,\n'
-        '                  options=("-std=c++17", "-fmad=false"), module=mod)\n',
+        '    record_module(f"gpuwm.core.nest_interp:{name}", source=src,\n'
+        '                  options=options, module=mod)\n',
         "")
     assert mutated != text, "the control did not modify the site"
     problems = audit_source(path, mutated)
@@ -546,7 +550,7 @@ def test_control_options_collapsed_to_a_global_string_is_caught():
     path = "gpuwm/core/nest_interp.py"
     text = _site_text(path)
     mutated = text.replace(
-        '                  options=("-std=c++17", "-fmad=false"), module=mod)',
+        '                  options=options, module=mod)',
         '                  options=("-std=c++17",), module=mod)')
     assert mutated != text, "the control did not modify the site"
     problems = audit_source(path, mutated)

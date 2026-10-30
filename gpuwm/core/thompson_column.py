@@ -128,6 +128,13 @@ def apply_generated(state, cfg, dt, *, refl_10cm_due=False):
     kernel = (get_kernel("thompson_column", "thompson_column_step") if capacity == 64
               else get_kernel_int_defines("thompson_column","thompson_column_step",(("THOMPSON_COLUMN_KMAX",capacity),)))
     kernel(((ny*nx+31)//32,), (32,), args)
+    # WRF v4.4 mp_gt_driver's negative-vapour fill (module_mp_thompson.F:
+    # 1352-1362, the generation's pinned source): the same loop as v4.6.1's,
+    # after the radii and reflectivity the kernel formed from the unfilled
+    # qv1d, with the same no-microphysics exit (:1867) and 1.E-10 floor
+    # (:3633), so the post-kernel array holds the words the loop reads.
+    from gpuwm.core.microphysics import thompson_negative_vapour_fill
+    thompson_negative_vapour_fill(state.qv)
     th[...] = temperature / pii
     if not cfg.no_mp_heating:
         limit = np.float32(cfg.mp_tend_lim) * np.float32(dt)

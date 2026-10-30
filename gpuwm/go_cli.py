@@ -1189,7 +1189,8 @@ def fetch_command(plan: dict) -> list[str]:
     from gpuwm.fetch import GFS_CONTAINER_SOURCES
     if (fetch_endpoints.policy_uses_aws(plan["source"])
             and plan["source"] in GFS_CONTAINER_SOURCES):
-        command.extend(("--mode", "full-file"))
+        from gpuwm.fetch import GFS_RECORDS_MODE
+        command.extend(("--mode", GFS_RECORDS_MODE))
     if plan.get("as_posted") is not None:
         command.append("--as-posted" if plan["as_posted"] else "--whole-cycle")
     if plan.get("late_after_minutes") is not None:
@@ -4180,36 +4181,10 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
                                   else DEFAULT_FORCING_INTERVAL_SECONDS),
         ingest_forcing_interval_seconds=forcing_interval,
         resident_forcing_intervals=resident_slots)
-    # A PREPARATION THE CARD CANNOT HOLD PREPARES ON THE CPU.  The door
-    # this chain runs (gpuwm prep, backend auto) prices its preparation
-    # before its first device allocation and moves it to the CPU when the
-    # card's free memory cannot hold it (A65), so refusing the whole run
-    # here for the preparation's card price refused a run that completes.
-    # The gate prices the road the door will take: the CPU preparation's
-    # host term is then what binds that phase.  An explicit cuda keeps
-    # the card price, and the refusal.  The note says "may": this gate
-    # reads the ingest estimate, while the door decides from the decoded
-    # preparation's own price when it starts, and a price under the card's
-    # free memory keeps that preparation on the card (the safe direction).
+    # Automatic preparation keeps CUDA on a certified device, regardless
+    # of contention. Price that road; never admit using a hypothetical CPU
+    # fallback that would change the prepared child fields.
     preparation_on_cpu_note = None
-    if (probe is not None and phases.ingest_priced
-            and getattr(phases, "preprocess_backend", "cuda") == "auto"
-            and phases.ingest_envelope_bytes > int(probe["free_bytes"])):
-        preparation_on_cpu_note = (
-            f"the preparation's CUDA price "
-            f"{phases.ingest_envelope_bytes / 2**30:.2f} GiB exceeds the "
-            f"card's {int(probe['free_bytes']) / 2**30:.2f} GiB free, so "
-            "it may prepare on the CPU (--preprocess-backend auto decides "
-            "from the preparation's own price when it starts)")
-        phases = estimate_phases(
-            exp, source=source, vram_gib=vram_gib, profile=profile,
-            machine=machine, forcing_intervals=forcing_intervals,
-            forcing_interval_seconds=(
-                forcing_interval if forcing_interval is not None
-                else DEFAULT_FORCING_INTERVAL_SECONDS),
-            ingest_forcing_interval_seconds=forcing_interval,
-            preprocess_backend="cpu",
-            resident_forcing_intervals=resident_slots)
     tree_road = getattr(phases, "tree_road", None)
     planner_refuse, planner_note = planner_gate(tree_road, card_seen=probe is not None)
     # THE PREPARATION'S HOST TERM, the one the wizard sizes against.  A CPU
@@ -6374,6 +6349,13 @@ def _archive_dry_readiness(args, payload: dict, cycle) -> int | None:
     """Dated archive dry-runs prove every requested boundary exists."""
     if not getattr(args, "dry_run", False):
         return None
+    # These routes use their declared inputs, not the config's [fetch]
+    # provenance. Probing that unused archive refused a valid local dry run
+    # with exit 75 before _registered_launch could review it.
+    if ("case_data" in payload
+            or any(getattr(args, key, None) is not None
+                   for key in ("prepared_root", "restart", "wps_namelist"))):
+        return None
     from gpuwm import fetch_endpoints, source_readiness
     table = payload.get("fetch", {})
     requested = cycle or table.get("cycle")
@@ -7488,6 +7470,8 @@ def register_cli(subparsers) -> None:
 
 def _add_go_arguments(parser) -> None:
     """Every argument of ``gpuwm go``, spelled once for ``go`` and ``ensemble``."""
+    from gpuwm.output_formats import add_arguments
+    add_arguments(parser)
     import argparse
     parser.add_argument("config", type=Path, nargs="?", metavar="CONFIG",
                         help="an experiment TOML from gpuwm domain; its source and "
@@ -7504,6 +7488,8 @@ def _add_go_arguments(parser) -> None:
                              "eligible registry ids: " + ", ".join(ensemble_source_ids()))
     parser.add_argument("--history-interval", type=int, default=None, metavar="SECONDS",
                         help="history frame interval when creating a generated-source domain")
+    from gpuwm.cli import add_history_compression_argument
+    add_history_compression_argument(parser)
     parser.add_argument("--member", default=None, metavar="ID",
                         help="select one generated source trajectory; fetch accepts member lists")
     parser.add_argument("--init", default=None, help="initial UTC analysis/cycle, YYYY-MM-DDTHH")

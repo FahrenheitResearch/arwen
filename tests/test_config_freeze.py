@@ -79,6 +79,11 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     # 2.9.7, keyword-only and appended last: tc/nest's fixed-frame nest
     # accumulation archive (on; read only on a nested domain) and the HRRR v4
     # climate statistics (lane/hrrr-v4-clwrf 3aec2abd31, off).
+    # 2.9.10, keyword-only and appended last: WRF's ghg_input (CAMtr gases,
+    # engine default 0 = fixed gases; fix/wrf461-2dom-exact 329c723395).
+    assert names.pop() == "ghg_input"
+    assert RunConfig.__dataclass_fields__["ghg_input"].default == 0
+    assert RunConfig.__dataclass_fields__["ghg_input"].kw_only
     for name, default in (("nest_accumulation_archive", True),
                           ("wind_int", 5), ("diag_int", 15),
                           ("output_diagnostics", 0),
@@ -503,7 +508,10 @@ def _check_frozen_defaults(actual):
                          # 2.9.7: the HRRR v4 climate statistics (off) and
                          # tc/nest's archive (read only on a nested domain).
                          ("output_diagnostics", 0), ("diag_int", 15),
-                         ("wind_int", 5), ("nest_accumulation_archive", True)):
+                         ("wind_int", 5), ("nest_accumulation_archive", True),
+                         # 2.9.10: WRF's ghg_input at the engine's fixed
+                         # gases (fix/wrf461-2dom-exact).
+                         ("ghg_input", 0)):
         assert actual.pop(field) == value, field
     for field,value in (("urban_ucm_generation","wrf_471"),("urban_treeoption",-1),
                         ("urban_ttscheme",-1),("urban_fvg",-1.),("urban_table_dir","")):

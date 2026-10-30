@@ -654,6 +654,23 @@ STATE_INFRA_ATTRS = frozenset({
     # refuses the attribute, so every analysis-door checkpoint and the final
     # trajectory digest raise RestartManifestError.
     "_iau_after_step",
+    # Strict WRF-file nest start (gpuwm.ingest.wrfinput_nest_initial
+    # .finish_strict_nest_start): the file's T a domain's FIRST frame writes
+    # as WRF's th_phy_m_t0, read only before the domain's first step, and
+    # the flag that the nest already took its first force round trip.  Both
+    # are spent before any checkpoint can be written; INFRA like the start
+    # inputs above.  Unclassified, every strict two-domain WRF-file run
+    # stopped at its first state digest.
+    "_wrf_start_history_t",
+    "_wrf_start_diagnostics_carried",
+    # The history callback's per-frame note that a strict nest frame
+    # carries the next force's round trip, and the run config it reads.
+    "_wrf_frame_round_trip_due",
+    "_wrf_round_trip_run",
+    # Strict history T (WRF's th_phy_m_t0) where it parts from t_2; a resume
+    # rebuilds it at its first step, so a frame written before that step
+    # writes t_2 (wrf.exe's restart carries th_phy_m_t0 itself).
+    "_wrf_th_phy_m_t0",
 })
 
 # --------------------------------------------------------------------------
@@ -698,6 +715,62 @@ SERIALIZED_SCRATCH_SLOTS = frozenset({
 #: the physics driver allocates exactly when the run books it; restore drops
 #: a stored pair the live run does not book (_apply_validated_restart).
 _THOMPSON_CLOUD_BOOKING_SLOTS = frozenset({"mp_cloudnc", "mp_cloudncv"})
+
+
+def _refd_max_held(config) -> bool:
+    """Whether a run with this config echo allocates ``fields/refd_max``.
+
+    The same gate as ``PhysicsDriver.__init__`` (gpuwm/core/physics.py):
+    REFD_MAX is a zero-held output plane exactly when neither the NWP nor
+    the GSD diagnostic family runs.
+    """
+    return (int(config.get("nwp_diagnostics", 0) or 0) == 0
+            and not int(config.get("gsd_diagnostics", 0) or 0))
+
+
+#: Physics-driver ``fields`` planes whose PRESENCE is decided by an
+#: output-only switch in CONFIG_DIAGNOSTIC_FIELDS, which a resume may flip:
+#: name -> (switch, does a config echo allocate it).  Every other plane
+#: keeps the exact inventory and shape check.  Named breakage (V2W WoFS,
+#: 2026-10-29): a forecast branched from an analysis checkpoint written with
+#: nwp_diagnostics = 0 and resumed with 1 (UP_HELI_MAX on) refused
+#: "restart surface-field inventory ... extra ['refd_max']", 18 of 18
+#: members rc 2.
+_DIAGNOSTIC_GATED_DRIVER_FIELDS = {
+    "refd_max": ("nwp_diagnostics", _refd_max_held),
+}
+
+
+def _diagnostic_gated_field_changes(stored_fields, header, driver) -> dict:
+    """``{name: "dropped" | "initialised"}`` for the gated planes a resume's
+    diagnostic switch moved.
+
+    A plane counts as moved only when the checkpoint's own inventory agrees
+    with the switch its header records; a file that disagrees with its own
+    header is left to the exact inventory check, which refuses it.
+    """
+    config = header.get("config") or {}
+    changes = {}
+    for name, (_switch, allocated_by) in _DIAGNOSTIC_GATED_DRIVER_FIELDS.items():
+        stored_has = name in stored_fields
+        if stored_has == (name in driver.fields):
+            continue
+        if stored_has != allocated_by(config):
+            continue
+        changes[name] = "dropped" if stored_has else "initialised"
+    return changes
+
+
+def _diagnostic_gated_note(name, change, header) -> str:
+    switch = _DIAGNOSTIC_GATED_DRIVER_FIELDS[name][0]
+    written = (header.get("config") or {}).get(switch, 0)
+    if change == "dropped":
+        return (f"note: checkpoint written with {switch}={written} carries "
+                f"fields/{name}, which this run does not hold ({switch} "
+                "changed at the restart); dropped")
+    return (f"note: checkpoint written with {switch}={written} has no "
+            f"fields/{name}, which this run holds ({switch} changed at "
+            "the restart); initialised to zero")
 
 #: Cross-step accumulators that are deliberately NOT checkpointed.
 #:
@@ -7032,6 +7105,10 @@ def restore_tree_restart(path, model, *,
         gid for gid, node in nodes.items() if node.clock.history_due())
     root_id = int(model.root.cfg.grid_id)
     model._last_checkpoint = paths[root_id]
+    # A checkpoint read beside the leg's preparation (restart_prefetch.prefetch_beside) is applied:
+    # its host arrays are not held through the integration.
+    from gpuwm.io.restart_prefetch import release_beside
+    release_beside(paths.values())
     return TreeRestartInfo(
         elapsed_ticks=ticks, tick_den=tick_den, phase=PERIOD_BEGIN,
         paths_by_grid_id=paths, headers_by_grid_id=headers,
@@ -7132,13 +7209,18 @@ def _validate_driver_payload(stored, header, state, driver, elapsed,
     stored_fields = {key[len("fields/"):]: value
                      for key, value in stored.items()
                      if key.startswith("fields/")}
-    if set(stored_fields) != set(driver.fields):
+    # A plane a resume's output-only diagnostic switch moved is dropped or
+    # initialised by _restore_driver; every other plane must match exactly.
+    gated = _diagnostic_gated_field_changes(stored_fields, header, driver)
+    compared = set(stored_fields) - set(gated)
+    expected = set(driver.fields) - set(gated)
+    if compared != expected:
         raise RestartMismatchError(
             "restart surface-field inventory does not match the resuming "
-            f"driver (missing {sorted(set(driver.fields) - set(stored_fields))}, "
-            f"extra {sorted(set(stored_fields) - set(driver.fields))})")
-    for name, host in stored_fields.items():
-        _check_array(host, driver.fields[name], f"fields/{name}")
+            f"driver (missing {sorted(expected - compared)}, "
+            f"extra {sorted(compared - expected)})")
+    for name in sorted(compared):
+        _check_array(stored_fields[name], driver.fields[name], f"fields/{name}")
 
     for name, target in (("rthratenlw", driver.rthratenlw),
                          ("rthratensw", driver.rthratensw),
@@ -8037,9 +8119,16 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
     stored_fields = {key[len("fields/"):]: value
                      for key, value in stored.items()
                      if key.startswith("fields/")}
+    gated = _diagnostic_gated_field_changes(stored_fields, header, driver)
     for name, host in stored_fields.items():
+        if name in gated:
+            continue
         target = driver.fields[name]
         target[...] = asarray(host)
+    for name, change in sorted(gated.items()):
+        if change == "initialised":
+            driver.fields[name][...] = 0
+        print(_diagnostic_gated_note(name, change, header))
     lake = getattr(driver, "lake", None)
     if lake is not None:
         lake.invalidate_columns()

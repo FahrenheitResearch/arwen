@@ -15,13 +15,10 @@ use rw_store::netcdf_classic::{
     NcAttr, NcData, NcDim, NcFormat, NcType, NcVarDef,
 };
 
-#[cfg(not(feature = "render-netcdf4"))]
-use rw_store::netcdf_classic::NcClassicWriter;
-#[cfg(feature = "render-netcdf4")]
 #[path = "render_netcdf4.rs"]
 mod render_netcdf4;
-#[cfg(feature = "render-netcdf4")]
 use render_netcdf4::RenderFrameWriter as NcClassicWriter;
+pub use render_netcdf4::{render_frame_compression, RenderCompression};
 
 use crate::composite::{COMPOSITE_SCHEMA, CompositePlan, SeamStat};
 use crate::error::{MpasError, MpasResult};
@@ -156,6 +153,23 @@ pub const MODEL_LABEL_ATTRIBUTE: &str = "GPUWM_MODEL_LABEL";
 /// mesh, so it says which mesh it was.
 pub const GRID_LABEL_ATTRIBUTE: &str = "GPUWM_GRID_LABEL";
 
+/// The global attribute that says what a frame's `REFC` holds beyond the
+/// microphysics column maximum (`rw_wrfbatch`'s `REFC_NOTE_ATTRIBUTE` pins
+/// the same literal and adds the note to the composite reflectivity map's
+/// title).  Written on a frame that carries the cumulus scheme's rain rate
+/// (`CUPREC`), whose reflectivity `REFC` then includes
+/// (`fieldmap::add_convective_reflectivity`).
+///
+/// THE BREAKAGE THIS PREVENTS: on a coarse hex row the echoes a viewer sees
+/// are mostly the Z-R reflectivity of parameterised rain, not hydrometeors
+/// the model carried, and nothing on the map said so (WOOF review,
+/// 2026-10-29: run_9a0796b2e9c8e251's 20Z map drew 20-30 dBZ over
+/// Minnesota from the cumulus scheme's rain alone).
+pub const REFC_NOTE_ATTRIBUTE: &str = "GPUWM_REFC_NOTE";
+
+/// The note itself, as the map title prints it.
+pub const REFC_CONVECTIVE_NOTE: &str = "incl. parameterised convection";
+
 /// The longest grid label the renderer's headline takes (the same ceiling
 /// as the model label's metadata row).
 pub const GRID_LABEL_MAX_CHARS: usize = 32;
@@ -173,11 +187,20 @@ fn km_token(metres: f64) -> String {
 }
 
 /// The spacing a mesh is known by, from its own per-cell spacing:
-/// `15 km` for a uniform mesh (its median), `60-3 km` for a graded one
-/// (coarsest to finest).  Uniform is the refined-region rule's own test --
-/// coarsest within [`crate::window::MESH_FOCUS_REFINEMENT_FACTOR`] of the
-/// finest -- so a mesh this calls uniform is one `--window mesh` refuses
-/// as having no refined region, and the two never disagree.
+/// `15 km` for a uniform mesh (its median), `96-3 km` for a graded one
+/// (background to refined region).  Uniform is the refined-region rule's
+/// own test -- coarsest within [`crate::window::MESH_FOCUS_REFINEMENT_FACTOR`]
+/// of the finest -- so a mesh this calls uniform is one `--window mesh`
+/// refuses as having no refined region, and the two never disagree.
+///
+/// A graded mesh is named by its two REGIONS, not its two most distorted
+/// cells: the refined end is the median of the cells within the factor of
+/// the finest (the very set `--window mesh` frames and takes its `dx`
+/// from), the background end the median of the cells within the factor of
+/// the coarsest.  THE BREAKAGE THIS PREVENTS, MEASURED (2026-10-28): the
+/// 96-to-3 km zoom globe (r700, 286,530 cells, per-cell spacing 2.51 to
+/// 100.45 km, refined median 3.04 km) was headlined `100-2.5 km` from its
+/// single extreme cells, a mesh nobody built.
 pub fn mesh_spacing_label(cell_spacing_m: &[f64]) -> Option<String> {
     let finite: Vec<f64> = cell_spacing_m
         .iter()
@@ -189,14 +212,21 @@ pub fn mesh_spacing_label(cell_spacing_m: &[f64]) -> Option<String> {
     }
     let min = finite.iter().copied().fold(f64::INFINITY, f64::min);
     let max = finite.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    if max <= crate::window::MESH_FOCUS_REFINEMENT_FACTOR * min {
-        let mut sorted = finite;
-        let mid = sorted.len() / 2;
-        sorted.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
-        Some(format!("{} km", km_token(sorted[mid])))
+    let factor = crate::window::MESH_FOCUS_REFINEMENT_FACTOR;
+    if max <= factor * min {
+        Some(format!("{} km", km_token(median(finite))))
     } else {
-        Some(format!("{}-{} km", km_token(max), km_token(min)))
+        let fine: Vec<f64> = finite.iter().copied().filter(|s| *s <= factor * min).collect();
+        let coarse: Vec<f64> = finite.into_iter().filter(|s| *s * factor >= max).collect();
+        Some(format!("{}-{} km", km_token(median(coarse)), km_token(median(fine))))
     }
+}
+
+/// The upper median of a non-empty set (the element a sort puts at `len / 2`).
+fn median(mut values: Vec<f64>) -> f64 {
+    let mid = values.len() / 2;
+    values.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
+    values[mid]
 }
 
 /// `MODEL SPACING` (`hex 15 km`), or `mesh SPACING` when no model was
@@ -491,6 +521,14 @@ pub fn convert_frame_composite(
     convert_frame_inner(frame, weights, composite, None, destination, options)
 }
 
+/// The frame's `REFC_NOTE_ATTRIBUTE`: the convective note when its REFC took
+/// the cumulus scheme's reflectivity (it carries both `REFC` and `CUPREC`;
+/// the history reader adds the one to the other whenever both are read).
+fn refc_note(frame: &MpasFrame) -> Option<&'static str> {
+    (frame.fields.contains_key("REFC") && frame.fields.contains_key("CUPREC"))
+        .then_some(REFC_CONVECTIVE_NOTE)
+}
+
 fn convert_frame_inner(
     frame: &MpasFrame,
     weights: &NearestCellWeights,
@@ -578,6 +616,9 @@ fn convert_frame_inner(
     }
     if let Some(label) = options.grid_label.as_deref() {
         gattrs.push(NcAttr::text(GRID_LABEL_ATTRIBUTE, label));
+    }
+    if let Some(note) = refc_note(frame) {
+        gattrs.push(NcAttr::text(REFC_NOTE_ATTRIBUTE, note));
     }
     if let Some(terrain) = &options.terrain_authority {
         if terrain.values.len() != ny*nx {
@@ -1041,6 +1082,21 @@ fn convert_frame_inner(
                 "PHB" => values.iter_mut().for_each(|v| *v *= WRF_GRAVITY),
                 "HGT" => if let Some(terrain) = &options.terrain_authority {
                     values.copy_from_slice(&terrain.values);
+                } else if let (None, Some((zgrid, zl))) = (composite, frame.fields.get("PHB")) {
+                    // MPAS defines the terrain as the ground of its height
+                    // coordinate (init_atmosphere: ter = zgrid(1)), so HGT is
+                    // taken from zgrid's lowest level, which is the surface PHB
+                    // itself carries.  Breakage prevented: the hex RRFS
+                    // limited-area history (rrfs/c3-lam, mv3km 2023-03-31)
+                    // writes ter = 0 everywhere while zgrid(1) holds the real
+                    // terrain, so every product that reduced to sea level or
+                    // took heights above ground used flat terrain (MSLP 864-1013
+                    // hPa following the mountains, 1000 hPa heights of -1462 m).
+                    let ground: Vec<f32> = zgrid.chunks(*zl).map(|c| c[0]).collect();
+                    values = match remap {
+                        Some(r) => r.gather(remap_class("HGT"), &ground, 1)?,
+                        None => weights.gather(&ground, 1)?,
+                    };
                 },
                 _ => {}
             }
@@ -1203,6 +1259,28 @@ mod tests {
         assert_eq!(ConvertOptions::default().model_label, None);
     }
 
+    /// The renderer reads this exact name (`rw_wrfbatch` pins the same
+    /// literal), and only a frame whose REFC took the cumulus scheme's
+    /// reflectivity says so: a convection-permitting row (no cumulus scheme,
+    /// no `cuprec`) converts to the same attributes as before.
+    #[test]
+    fn the_refc_note_names_parameterised_convection_only_when_the_frame_carries_cuprec() {
+        assert_eq!(REFC_NOTE_ATTRIBUTE, "GPUWM_REFC_NOTE");
+        let mut frame = MpasFrame {
+            history_path: "unused".into(), history_sha256: String::new(), init_path: None, init_sha256: None,
+            valid_time: crate::history::Timestamp::parse("2026-10-28_20:00:00").unwrap(),
+            n_cells: 2, n_levels: 1, n_soil_levels: 0, fields: Default::default(),
+            latitude_degrees: vec![], longitude_degrees: vec![], absent: vec![], science_attributes: vec![],
+            split: None, companion_diag: None,
+        };
+        frame.fields.insert("REFC".into(), (vec![-35.0, 41.0], 1));
+        assert_eq!(refc_note(&frame), None);
+        frame.fields.insert("CUPREC".into(), (vec![0.0, 0.0], 1));
+        assert_eq!(refc_note(&frame), Some("incl. parameterised convection"));
+        frame.fields.remove("REFC");
+        assert_eq!(refc_note(&frame), None);
+    }
+
     #[test]
     fn the_grid_label_names_the_mesh_spacing_not_the_render_grid() {
         assert_eq!(GRID_LABEL_ATTRIBUTE, "GPUWM_GRID_LABEL");
@@ -1213,6 +1291,13 @@ mod tests {
         assert_eq!(mesh_spacing_label(&[59_800.0, 61_000.0, 58_500.0]).as_deref(), Some("60 km"));
         assert_eq!(mesh_spacing_label(&[4_500.0; 3]).as_deref(), Some("4.5 km"));
         assert_eq!(mesh_spacing_label(&[3_000.0, 12_000.0, 60_000.0]).as_deref(), Some("60-3 km"));
+        // A 96-to-3 km zoom globe: a few distorted cells at either end
+        // (2.51 km, 100.45 km) must not name the mesh; its regions do.
+        let mut zoom: Vec<f64> = vec![2_513.5, 100_451.8];
+        zoom.extend((0..400).map(|i| 2_950.0 + 0.5 * i as f64)); // refined region, median ~3.05 km
+        zoom.extend((0..60).map(|i| 6_000.0 + 700.0 * i as f64)); // transition 6-47 km
+        zoom.extend((0..200).map(|i| 94_000.0 + 20.0 * i as f64)); // background, median ~96 km
+        assert_eq!(mesh_spacing_label(&zoom).as_deref(), Some("96-3 km"));
         assert_eq!(mesh_spacing_label(&[]), None);
         assert_eq!(mesh_spacing_label(&[15_000.0, f64::NAN]), None);
         assert_eq!(grid_label(Some("hex"), &uniform15).as_deref(), Some("hex 15 km"));

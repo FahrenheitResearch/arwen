@@ -192,11 +192,11 @@ bytes are outside the numerical oracle.
   `-ftz=true` to whatever the caller passed, at
   `cupy.cuda.compiler` line 585 (`options += ('-ftz=true',)`), after the
   caller's options, and NVRTC honours the last occurrence.
-  The inventory records 12 distinct caller-supplied option tuples across the
-  133 compile sites in the shipped package, each listed here with a site
+  The inventory records 11 distinct caller-supplied option tuples across the
+  135 compile sites in the shipped package, each listed here with a site
   that supplies it:
   - no caller options -- `gpuwm/core/attribute_tracking.py:99`
-    (xp.ElementwiseKernel), and 88 other site(s)
+    (xp.ElementwiseKernel), and 91 other site(s)
   - `-std=c++17` -- `gpuwm/core/acoustic_fusion.py:403` (cp.RawModule), and
     13 other site(s)
   - `--std=c++17` -- `gpuwm/ensemble/batch_perturbation.py:51`
@@ -218,8 +218,6 @@ bytes are outside the numerical oracle.
     time -- `gpuwm/ocean/waves/model.py:73` (cp.RawModule)
   - `-std=c++17` `--ftz=false` `--fmad=false` --
     `gpuwm/core/kernels/__init__.py:805` (compiler.compile_using_nvrtc)
-  - `-std=c++17` `-fmad=false` -- `gpuwm/core/nest_interp.py:261`
-    (cp.RawModule)
   `R5` and `R1` are kernels inside ONE compiled object -- same device, same
   flags, one compile -- and they did not measure alike, so on this device
   the outcome follows the instruction the compiler emitted rather than the

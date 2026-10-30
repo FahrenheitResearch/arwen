@@ -1101,8 +1101,12 @@ def _quicklook(dom: dict, *, grid_id: int, source: str,
             "divide it exactly, so every full frame lands on a quick-look "
             "time")
     names = table.get("history_vars", list(QUICKLOOK_DEFAULT_VARS))
-    selection = history_selection_module.HistorySelection.from_mapping(
+    checked = history_selection_module.HistorySelection.from_mapping(
         {"history_vars": list(names)}, source=where)
+    # The quick-look form of the same selection: T and PHB only when named
+    # (history_selection.QUICKLOOK_UNFORCED_FIELDS says why).
+    selection = history_selection_module.QuickLookSelection(
+        history_vars=checked.history_vars, source=checked.source)
     return every, float(history_interval_s), selection
 
 
@@ -3085,6 +3089,63 @@ def _check_cadence(label: str, seconds: Fraction, dt: Fraction, grid_id,
             f"dt = {dt} s exactly, {seconds}/({dt}) = {steps}.")
 
 
+def wrf_physics_cadences(run, dt: Fraction) -> dict[str, dict[str, object]]:
+    """The physics cadences of one fixed-step domain that wrf.exe rounds.
+
+    WRF takes ``radt``, ``cudt`` and ``bldt`` in minutes and runs each
+    scheme on whole steps: ``STEPRA/STEPCU/STEPBL = MAX(NINT(minutes*60/DT),
+    1)`` (phys/module_physics_init.F).  gpuwm's clock does the same
+    (:func:`gpuwm.core.clock.resolve_clock`); this names the cadences
+    that are not already a whole number of steps, each with its whole
+    step count and the minutes it actually runs at, for the loader's
+    warning and the run receipt.  Empty when every cadence divides, so a
+    receipt is unchanged for every configuration that already ran.
+
+    Before 2.9.10 the loader refused such a cadence ("300/(45) = 20/3")
+    where wrf.exe runs it: a WRF user's ``cudt = 5`` at a 45 s step
+    (7 steps, 5.25 min) could not be written as it is in WRF.
+    """
+
+    rows: dict[str, dict[str, object]] = {}
+    radt = run.radt if run.radt > 0.0 else run.radt_minutes
+    for label, minutes, read in (
+            ("radt", radt, radiation_enabled(run)),
+            ("cudt_minutes", run.cudt_minutes, run.cu_physics != 0),
+            ("bldt", run.bldt, (run.bl_pbl_physics != 0
+                                or run.sf_sfclay_physics != 0
+                                or run.sf_surface_physics != 0))):
+        if not read or minutes <= 0.0:
+            continue
+        exact = Fraction(str(minutes)) * 60 / dt
+        if exact.denominator == 1:
+            continue
+        # Fortran NINT rounds half away from zero; every value is positive.
+        steps = max(int(exact + Fraction(1, 2)), 1)
+        rows[label] = {
+            "requested_minutes": float(minutes),
+            "step_seconds": float(dt),
+            "steps": steps,
+            "effective_minutes": float(Fraction(steps) * dt / 60),
+        }
+    return rows
+
+
+def _warn_wrf_physics_cadences(run, dt: Fraction, grid_id, source: str) -> None:
+    """Say, once, which cadences run as wrf.exe rounds them."""
+
+    for label, row in wrf_physics_cadences(run, dt).items():
+        warn(f"{label} = {row['requested_minutes']:g} min on domain "
+             f"grid_id={grid_id} of {source} is "
+             f"{Fraction(str(row['requested_minutes'])) * 60 / dt} steps of "
+             f"{dt} s; it runs every {row['steps']} steps "
+             f"({row['effective_minutes']:g} min), as wrf.exe runs it",
+             why="phys/module_physics_init.F: STEPRA/STEPCU/STEPBL = "
+                 "MAX(NINT(minutes*60/DT), 1); the scheme fires on whole "
+                 "steps. The run receipt records the effective minutes "
+                 "(experiment.domains[].physics_cadences).",
+             once=True)
+
+
 def _check_run_length_on_step_grid(run_seconds: Fraction, dt: Fraction,
                                    grid_id, source: str) -> None:
     """Refuse a forecast length that is not a whole number of d01 steps.
@@ -4419,18 +4480,11 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         _check_whole_second_cadence(
             "history_interval_s", Fraction(history_interval_s), grid_id,
             source)
-        if radiation_enabled(run) and not run.use_adaptive_time_step:
-            radt_min = run.radt if run.radt > 0.0 else run.radt_minutes
-            _check_cadence("radt", Fraction(str(radt_min)) * 60, dt_ex,
-                           grid_id, source)
-        if run.cu_physics == 1 and not run.use_adaptive_time_step:
-            _check_cadence("cudt_minutes", Fraction(str(run.cudt_minutes)) * 60,
-                           dt_ex, grid_id, source)
-        if (not run.use_adaptive_time_step and
-                (run.bl_pbl_physics != 0 or run.sf_sfclay_physics != 0
-                 or run.sf_surface_physics != 0)):
-            _check_cadence("bldt", Fraction(str(run.bldt)) * 60, dt_ex,
-                           grid_id, source)
+        # radt / cudt / bldt run on wrf.exe's whole steps (NINT), and the
+        # clock resolves them the same way; one that is not a whole
+        # number of steps is said, not refused.
+        if not run.use_adaptive_time_step:
+            _warn_wrf_physics_cadences(run, dt_ex, grid_id, source)
         if is_root:
             _check_cadence("restart_interval_s",
                            Fraction(restart_interval_s), dt_ex, grid_id,
@@ -5500,6 +5554,11 @@ def _public_config_value(value):
                                  or (value.field != "pressure" and item.name in {
                                      "pressure_center", "fallback_level_hpa", "fallback_deficit_m"})))}
         from gpuwm.io.history_selection import HistorySelection
+        if isinstance(value, HistorySelection):
+            if value.formats == ("netcdf",):
+                document.pop("formats", None)
+            if value.icechunk_store is None:
+                document.pop("icechunk_store", None)
         if (isinstance(value, HistorySelection)
                 and not document.get("full_history_interval_s")):
             # The between-hours subset (S4, HRRR-shaped sub-hourly history)

@@ -437,7 +437,14 @@ def test_a_spawned_worker_at_another_source_depth_passes_and_is_recorded():
 
 
 def test_the_receipt_check_holds_each_worker_count_to_the_allocation():
-    """The counts left out of the comparison are checked, not dropped."""
+    """The counts left out of the comparison are checked, not dropped.
+
+    Each is held to at most its allocation.  Fewer is the backend's own
+    answer to a busy host (its memory headroom fell between the budget
+    and the job): "f00 mapping used 20 native workers; expected 24"
+    no byte.  More than the allocation is the oversubscription the check
+    exists for.
+    """
     from gpuwm.ingest import preprocess_backend as backends
 
     controller = backends._selection(
@@ -445,9 +452,21 @@ def test_the_receipt_check_holds_each_worker_count_to_the_allocation():
         backends.NAMED_BY_CALLER)
     expected = controller.receipt()
     slot = controller.at_workers(2).receipt()
-    with pytest.raises(RuntimeError, match="used 2 native workers; expected 3"):
+    # Fewer than the allocation: the job ran, inside its share.
+    hrrr_runner._require_preprocess_receipt(
+        expected, slot, "f00 mapping", expected_native_workers=3)
+    # More than the allocation: the controller's whole budget on a slot.
+    with pytest.raises(
+            RuntimeError,
+            match="used 4 native workers; its allocation is at most 2"):
         hrrr_runner._require_preprocess_receipt(
-            expected, slot, "f01 west mapping", expected_native_workers=3)
+            expected, controller.receipt(), "f01 west mapping",
+            expected_native_workers=2)
+    for count in (0, None, True, "auto"):
+        bad = dict(copy.deepcopy(slot), workers=count)
+        with pytest.raises(RuntimeError, match="its allocation is at most 2"):
+            hrrr_runner._require_preprocess_receipt(
+                expected, bad, "f01 west mapping", expected_native_workers=2)
     stray = copy.deepcopy(slot)
     stray["masked_surface_chain"]["workers"] = 3
     with pytest.raises(RuntimeError,
@@ -550,6 +569,56 @@ def test_public_hrrr_receipt_keeps_decoder_and_native_budgets_separate():
         _validated_worker_receipts(
             report, selected_backend="cpu", requested_preprocess_workers=8,
             requested_pipeline_workers="4", final_hour=1)
+
+
+def test_public_hrrr_receipt_takes_a_backend_below_its_budget():
+    """The controller's backend may run on fewer threads than the budget.
+
+    A busy host narrowed the CPUs between the budget (24) and the
+    backend's own count (20): "f00 mapping used 20 native workers;
+    expected 24", then "worker budget was not honored", although the
+    count moves no byte.  More than the budget or the request is still
+    refused.
+    """
+    def report(backend_workers):
+        return {
+            "status": "PASS",
+            "preparation": {
+                "preprocess_backend": {
+                    "backend": "cpu", "workers": backend_workers},
+                "preprocess_worker_budget": {
+                    "schema": "gpuwm-preprocess-worker-budget-v1",
+                    "backend": "cpu",
+                    "applicable": True,
+                    "requested_total_native_workers": 24,
+                    "effective_total_native_workers": 24,
+                    "effective_allocation_per_job": [
+                        {"effective_native_workers": 24},
+                        {"effective_native_workers": 12},
+                        {"effective_native_workers": 12},
+                    ],
+                    "peak_active_native_workers": 24,
+                    "pipeline_decoder_workers_included": False,
+                },
+            },
+            "pipeline": {"workers": {"requested": "4", "selected": 4}},
+        }
+
+    options = dict(selected_backend="cpu", requested_pipeline_workers="4",
+                   final_hour=1)
+    for requested in (None, 24):
+        _validated_worker_receipts(
+            report(20), requested_preprocess_workers=requested, **options)
+    with pytest.raises(RuntimeError, match="budget was not honored"):
+        _validated_worker_receipts(
+            report(25), requested_preprocess_workers=None, **options)
+    with pytest.raises(RuntimeError, match="differs from the request"):
+        _validated_worker_receipts(
+            report(25), requested_preprocess_workers=24, **options)
+    for bad in (0, None, True, "auto"):
+        with pytest.raises(RuntimeError, match="budget was not honored"):
+            _validated_worker_receipts(
+                report(bad), requested_preprocess_workers=None, **options)
 
 
 def test_pipeline_mode_accepts_launch_ready_prepared_cache():

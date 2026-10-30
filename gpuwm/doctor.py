@@ -2878,9 +2878,12 @@ _CHECKED_ARTIFACTS = {
     "rw_mpas_convert": "the `MPAS binary` lines",
     "rw_mpas_lbc": "the `MPAS binary` lines",
     "rw_hex_points": "the `MPAS binary` lines",
+    "rw_mpas_init_v831": "the `MPAS binary` lines",
+    "rw_mpas_gsl_oro": "the `MPAS binary` lines",
     "rw_tempo": "the `TEMPO initialization library` line",
     "rw_projected_intermediate": "the `projected MET intermediate` line",
     "rw_mlexport": "the `ML dataset exporter` line",
+    "rw_icechunk": "the `Icechunk native history` line",
     "rw_grib2export": "the `GRIB2 exporter` line",
     "rw_verify": "the `observation verification engine` line",
     "rw_compare": "the `comparison engine` line",
@@ -3582,6 +3585,9 @@ _MPAS_DOORS = {
     "rw_mpas_lbc": "MPAS lateral boundaries for a limited-area mesh",
     "rw_hex_points": "soundings and meteograms from MPAS history "
                      "(the gpuwm-hex product door)",
+    "rw_mpas_init_v831": "RRFS-MPAS initial conditions and boundaries "
+                         "(gpuwm-hex init --physics-suite hrrrv5)",
+    "rw_mpas_gsl_oro": "GSL orographic drag statistics for the RRFS suites",
 }
 
 #: One action for all five: they share a clone, a cargo build and a
@@ -3647,6 +3653,10 @@ def _mpas_bridge_checks() -> list[Check]:
                 severity=SEVERITY_UNREACHABLE))
             continue
         if found is None:
+            row = _on_demand_row(label, name, door)
+            if row is not None:
+                checks.append(row)
+                continue
             checks.append(Check(
                 label, "missing",
                 f"not built and not staged -- {door} cannot run",
@@ -3693,6 +3703,32 @@ def _mpas_bridge_checks() -> list[Check]:
             group=_GROUP_ENGINES, blocking=False,
             severity=SEVERITY_UNREACHABLE))
     return checks
+
+
+def _icechunk_check() -> Check:
+    from gpuwm import output_formats
+
+    def find():
+        # Doctor reads the estate; it never stages an on-demand artifact.
+        with bridges.inspection_only():
+            return output_formats.find_binary()
+
+    label = "Icechunk native history (rw_icechunk)"
+    if not os.environ.get("GPUWM_RW_ICECHUNK"):
+        try:
+            absent = find() is None
+        except FileNotFoundError:
+            absent = False
+        if absent:
+            row = _on_demand_row(label, "rw_icechunk", "--output-format icechunk",
+                                 crate_relative="tools/rw_icechunk")
+            if row is not None:
+                return row
+    return _byte_contract_door_check(
+        label=label, name="rw_icechunk",
+        env_var="GPUWM_RW_ICECHUNK", find=find,
+        remedy=output_formats.remedy, door="--output-format icechunk",
+        missing_severity=SEVERITY_UNREACHABLE)
 
 
 def _ml_export_check() -> Check:
@@ -6841,7 +6877,8 @@ def _hrrr_fetch_path_check() -> Check:
         return Check(
             name, "verified",
             f"engine rust ({found}), default --mode {fetch.HRRR_DEFAULT_MODE}"
-            " (whole objects in parallel range GETs)",
+            " (the .idx record subset in parallel range GETs; a whole "
+            "object where the index cannot carry it)",
             brief=f"rust, {fetch.HRRR_DEFAULT_MODE}", group=_GROUP_ROUTE)
     return Check(
         name, "info",
@@ -7325,6 +7362,7 @@ def _collect_checks(sources: tuple[str, ...] | None = None,
     # The five MPAS binaries no bundle carried and no check reported.
     checks.extend(_mpas_bridge_checks())
     checks.append(_ml_export_check())
+    checks.append(_icechunk_check())
     checks.append(_grib2_export_check())
     checks.append(_gpu_post_kernels_check())
     checks.append(_verification_engine_check())

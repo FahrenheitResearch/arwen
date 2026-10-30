@@ -268,12 +268,24 @@ def test_state_shape_formulas_staggering():
 
 @requires_4dom_inputs
 def test_shared_dycore_state_symbols_are_restart_rebuilt_source(exp4):
-    """The sharing registry is exactly the restart REBUILT authority."""
-    assert pf.shared_dycore_state_symbols() == restart.STATE_REBUILT_ATTRS
+    """The sharing registry is the restart REBUILT authority, less the one
+    rebuilt symbol a live strict run carries between steps."""
+    assert pf.shared_dycore_state_symbols() == (
+        restart.STATE_REBUILT_ATTRS - {"p_perturbation"})
     active = set().union(*(
         pf.state_array_shapes(dc.run).keys() for dc in exp4.domains))
     assert set(pf.shared_dycore_state_workspace_shapes(exp4.domains)) == (
-        set(restart.STATE_REBUILT_ATTRS) & active)
+        (set(restart.STATE_REBUILT_ATTRS) - {"p_perturbation"}) & active)
+
+
+def test_strict_pressure_perturbation_is_never_shared_between_domains():
+    """Strict rk_step 1 and every history P read the previous step's
+    p_perturbation (core/dycore.py:_wrf_reuse_diagnostics).  Shared, a
+    two-domain strict run read the other domain's pressure: the UAE pair's
+    d01 history P differed from wrf.exe 4.6.1 in 527,901 of 528,000 words
+    at 45 s."""
+    assert "p_perturbation" in restart.STATE_REBUILT_ATTRS
+    assert "p_perturbation" not in pf.shared_dycore_state_symbols()
 
 
 def test_shared_dycore_state_workspace_binds_contiguous_prefixes(monkeypatch):
@@ -931,6 +943,41 @@ def test_smag_coefficients_alias_acoustic_backings(monkeypatch):
         4 * math.prod(flagship_shapes[slot])
         for slot in ("smag_km", "smag_kh"))
     assert removed == 141_120_000
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_strict_nest_larger_than_its_parent_gets_its_own_relaxation_backing(
+        monkeypatch, strict):
+    """The two-domain strict UAE case (2026-10-28): d01 120x100, d02 210x150,
+    44 levels.  Strict mode folds a nest's lateral relaxation through the
+    lbc_relax_* slots too (dycore._wrf_relaxation_fold), so the shared
+    arena must size them by the nest; sized by the specified parent alone,
+    the first nest step raised "scratch slot 'lbc_relax_u' arena capacity is
+    532400 values ((44, 100, 121)), requested 1392600 values
+    ((44, 150, 211))"."""
+    import types
+    import gpuwm.core.state as state_mod
+    monkeypatch.setattr(state_mod, "cp", np)
+    monkeypatch.setattr(pf, "WRF_EXACT", strict)
+    base = {**_TINY, "nz": 44}
+    parent = RunConfig(**{**base, "nx": 120, "ny": 100}, specified=True)
+    nest = RunConfig(**{**base, "nx": 210, "ny": 150}, nested=True)
+    domains = (types.SimpleNamespace(grid_id=1, parent_id=0, run=parent),
+               types.SimpleNamespace(grid_id=2, parent_id=1, run=nest))
+    shapes = pf.shared_scratch_arena_shapes(domains)
+    arena = state_mod.build_shared_scratch_arena(domains)
+    nest_rows = {"lbc_relax_u": (44, 150, 211), "lbc_relax_v": (44, 151, 210),
+                 "lbc_relax_theta": (44, 150, 210),
+                 "lbc_relax_phi": (45, 150, 210), "lbc_relax_w": (45, 150, 210)}
+    if strict:
+        for slot, shape in nest_rows.items():
+            assert shapes[slot] == shape
+            arena.view(shape, slot)[...] = np.float32(1)
+    else:
+        # The default route recomputes a nest's held increments in
+        # lbc_nested_relax and never asks a nest for these slots.
+        assert shapes["lbc_relax_u"] == (44, 100, 121)
+        assert "lbc_relax_w" not in shapes
 
 
 @pytest.mark.parametrize("strict,diff_opt,shared", [(True,1,False),(False,1,True),(True,2,True)])

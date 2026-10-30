@@ -175,7 +175,7 @@ fi
 # The minimum is not a constant here: it is the newest `rust-version`
 # the workspaces below declare in their tools/<name>/Cargo.toml, the
 # same field cargo enforces, so this check and cargo cannot disagree.
-RUST_WORKSPACES='grib1_bridge rustwx arwen-tui zarr_bridge rw_wps region_global_dealias nextgen_hydrofabric nextgen_forcing nextgen_verify hydro_world hydro_world_params nextgen_reservoir_prepare hydro_world_init ocean_prepare rw-bathy nextgen_output'
+RUST_WORKSPACES='grib1_bridge rustwx arwen-tui zarr_bridge rw_wps region_global_dealias nextgen_hydrofabric nextgen_forcing nextgen_verify hydro_world hydro_world_params nextgen_reservoir_prepare hydro_world_init ocean_prepare rw-bathy nextgen_output rw_icechunk'
 rust_minimum() {
     for ws in $RUST_WORKSPACES; do
         [ -f "tools/$ws/Cargo.toml" ] || continue
@@ -625,6 +625,9 @@ say "building the terminal workspace in tools/arwen-tui (offline, locked)"
 ( cd tools/arwen-tui && cargo build --release --locked --offline )
 say "building the regular-grid Zarr reader (offline, locked)"
 ( cd tools/zarr_bridge && cargo build --release --locked --offline )
+# The optional Icechunk output store writer; its crates are vendored with rustwx.
+say "building the Icechunk store writer in tools/rw_icechunk (offline, locked)"
+( cd tools/rw_icechunk && cargo build --release --locked --offline )
 # Every mapped source decodes in gpuwm_mapped_engine and every radar ingest
 # dealiases through region_global_dealias by default; a checkout that skips
 # either build reports both MISSING and cannot run those default routes.

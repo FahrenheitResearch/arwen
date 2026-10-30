@@ -36,7 +36,7 @@ offline command, build the hydro payload (`tools/nextgen_hydrofabric`),
 forcing (`tools/nextgen_forcing`), gauge verification (`tools/nextgen_verify`) and
 hydro fabric preparation (`tools/hydro_world`, `tools/hydro_world_params`,
 `tools/nextgen_reservoir_prepare`, `tools/hydro_world_init`) and ocean
-preparation (`tools/ocean_prepare`, `tools/rw-bathy`) and hydro output (`tools/nextgen_output`)
+preparation (`tools/ocean_prepare`, `tools/rw-bathy`) and hydro output (`tools/nextgen_output`), and the Icechunk store writer (`tools/rw_icechunk`)
 workspaces (fetching their locked dependencies first), and finish with `gpuwm doctor`, whose exit status the script propagates.
 
 A pip install on Windows x86-64 or Linux x86-64 needs no toolchain for
@@ -105,7 +105,7 @@ python -m pip install --upgrade pip
 python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
-for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify tools/hydro_world tools/hydro_world_params tools/nextgen_reservoir_prepare tools/hydro_world_init tools/ocean_prepare tools/rw-bathy tools/nextgen_output; do
+for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify tools/hydro_world tools/hydro_world_params tools/nextgen_reservoir_prepare tools/hydro_world_init tools/ocean_prepare tools/rw-bathy tools/nextgen_output tools/rw_icechunk; do
   (cd "$workspace" && cargo fetch --locked && cargo build --release --locked --offline)
 done
 gpuwm doctor
@@ -121,7 +121,7 @@ python -m pip install --upgrade pip
 python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
-foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify', 'tools\hydro_world', 'tools\hydro_world_params', 'tools\nextgen_reservoir_prepare', 'tools\hydro_world_init', 'tools\ocean_prepare', 'tools\rw-bathy', 'tools\nextgen_output') {
+foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify', 'tools\hydro_world', 'tools\hydro_world_params', 'tools\nextgen_reservoir_prepare', 'tools\hydro_world_init', 'tools\ocean_prepare', 'tools\rw-bathy', 'tools\nextgen_output', 'tools\rw_icechunk') {
   Push-Location $workspace; cargo fetch --locked; cargo build --release --locked --offline; Pop-Location
 }
 gpuwm doctor
@@ -163,11 +163,12 @@ bundle carries, and the gate below judges each one it finds built:
 | `tools/ocean_prepare` | `rw_ocean`, ocean bathymetry and atmospheric forcing preparation |
 | `tools/rw-bathy` | `rw_bathy`, storm-surge bathymetry ingest and products |
 | `tools/nextgen_output` | `rw_nextgen_output`, coupled hydro history, restart and products |
+| `tools/rw_icechunk` | `rw_icechunk`, the optional Icechunk output store writer |
 
 By hand, POSIX:
 
 ```bash
-for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify tools/hydro_world tools/hydro_world_params tools/nextgen_reservoir_prepare tools/hydro_world_init tools/ocean_prepare tools/rw-bathy tools/nextgen_output; do
+for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify tools/hydro_world tools/hydro_world_params tools/nextgen_reservoir_prepare tools/hydro_world_init tools/ocean_prepare tools/rw-bathy tools/nextgen_output tools/rw_icechunk; do
   (cd "$workspace" && cargo fetch --locked && cargo build --release --locked --offline)
 done
 ```
@@ -175,7 +176,7 @@ done
 Windows (PowerShell):
 
 ```powershell
-foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify', 'tools\hydro_world', 'tools\hydro_world_params', 'tools\nextgen_reservoir_prepare', 'tools\hydro_world_init', 'tools\ocean_prepare', 'tools\rw-bathy', 'tools\nextgen_output') {
+foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify', 'tools\hydro_world', 'tools\hydro_world_params', 'tools\nextgen_reservoir_prepare', 'tools\hydro_world_init', 'tools\ocean_prepare', 'tools\rw-bathy', 'tools\nextgen_output', 'tools\rw_icechunk') {
   Push-Location $workspace; cargo fetch --locked; cargo build --release --locked --offline; Pop-Location
 }
 ```

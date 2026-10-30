@@ -56,6 +56,11 @@ and TLS libraries, are inventoried with their licence texts in
 licenses/THIRD-PARTY-LICENSES-zarr-binary.txt. That notice also accompanies
 the bridge bundle's map-asset tree.
 
+The Icechunk native-history writer (rw_icechunk, in the bridge bundle and
+fetched on demand) is built from tools/rw_icechunk/Cargo.lock. Its locked
+dependencies are inventoried with their licence texts in
+licenses/RW-ICECHUNK-THIRD-PARTY.txt.
+
 Licensed under the Apache License, Version 2.0. Third-party datasets,
 tables, vendored components, and dependencies retain their own licenses
 and notices. Per-asset provenance (sources, generation recipes, SHA-256
@@ -918,7 +923,7 @@ below; a renderer shipped without it would satisfy clause 2 nowhere.
 
 Compiled artifacts (release bridge bundles and platform wheels)
 
-75 Rust executables and libraries (gpuwm.bridge_assets
+78 Rust executables and libraries (gpuwm.bridge_assets
 .BUNDLED_ARTIFACTS) are distributed in compiled form: as GitHub release
 bridge bundles, and staged into platform wheels at gpuwm/libexec/bridges/.
 A platform wheel carries all of them except the on-demand set

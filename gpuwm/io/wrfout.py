@@ -103,6 +103,48 @@ def resolve_wrfout_engine(engine: str | None = None) -> str:
     return value
 
 
+#: How history frames are stored.  ``deflate`` (the DEFAULT, Drew
+#: 2026-10-28: "Lossless compression is the default") writes each frame as
+#: a NetCDF-4 file whose chunks are byte-shuffled and deflated: every value
+#: is the same word after decompression, and the file is about a third of
+#: the classic one (4.3x smaller on a measured 1 km quick-look frame).  The
+#: chunks are compressed on a pool of worker threads off the step loop
+#: (gpuwm.io.nc_writer_bridge.Netcdf4Writer), never by HDF5 on one thread.
+#: ``none`` writes the classic CDF-2 frame as before, for readers that need
+#: raw classic files (``--history-compression none``).
+HISTORY_COMPRESSION_ENV = "GPUWM_HISTORY_COMPRESSION"
+#: zlib level of compressed frames (1-9).  4 is where the measured frames
+#: stop gaining (zstd 1/3/9 and zlib 4 within 10 % on every field).
+HISTORY_COMPRESSION_LEVEL_ENV = "GPUWM_HISTORY_COMPRESSION_LEVEL"
+#: Worker threads that compress frames (0 = every core, the default; the
+#: workers run at a lower priority than the forecast).
+HISTORY_COMPRESSION_THREADS_ENV = "GPUWM_HISTORY_COMPRESSION_THREADS"
+
+_HISTORY_COMPRESSIONS = ("deflate", "none")
+
+
+def resolve_history_compression(value: str | None = None) -> str:
+    """The history storage: explicit argument, else env, else deflate."""
+    chosen = value if value is not None else os.environ.get(
+        HISTORY_COMPRESSION_ENV, "deflate")
+    chosen = str(chosen).strip().lower() or "deflate"
+    if chosen not in _HISTORY_COMPRESSIONS:
+        raise ValueError(
+            f"unknown history compression {chosen!r} (from "
+            f"{HISTORY_COMPRESSION_ENV!r} or --history-compression); "
+            f"expected one of {_HISTORY_COMPRESSIONS}: 'deflate' (default) "
+            "writes lossless compressed NetCDF-4 frames, 'none' classic "
+            "CDF-2 frames")
+    return chosen
+
+
+def _history_netcdf4_options() -> dict:
+    level = int(os.environ.get(HISTORY_COMPRESSION_LEVEL_ENV, "4") or 4)
+    threads = int(os.environ.get(HISTORY_COMPRESSION_THREADS_ENV, "0") or 0)
+    return {"deflate": max(1, min(level, 9)), "shuffle": True,
+            "threads": max(0, threads)}
+
+
 #: The classic-container spelling of an attribute value, and the
 #: netCDF4-shaped facade that puts this tape on the Rust seam.  Both live
 #: in :mod:`gpuwm.io.classic_tape` because the wrfinput/wrfbdy export
@@ -128,10 +170,12 @@ class _ClassicTape(ClassicTape):
     header-frozen refusal names this writer's own escapes.
     """
 
-    def __init__(self, path, *, container: str = "cdf2"):
+    def __init__(self, path, *, container: str = "cdf2",
+                 netcdf4_options: dict | None = None):
         super().__init__(path, container=container,
                          completion_attr=_COMPLETION_ATTR,
-                         frozen_remedy=_FROZEN_REMEDY)
+                         frozen_remedy=_FROZEN_REMEDY,
+                         netcdf4_options=netcdf4_options)
 
 
 def _stringify_and_clear_exception_tracebacks(exc: BaseException) -> str:
@@ -774,8 +818,12 @@ def state_frame(
         if phb.ndim == 1:                     # flat base state: broadcast column
             phb = np.ascontiguousarray(
                 np.broadcast_to(phb[:, None, None], (phb.size, ny, nx)))
+        start_t = _wrf_start_history_t(state)
+        if start_t is not None and not isinstance(start_t, np.ndarray):
+            start_t = cp.asnumpy(start_t)
         fields = {
-            "T": (cp.asnumpy(state.thp) if _WRF_EXACT
+            "T": (start_t if start_t is not None
+                  else cp.asnumpy(state.thp) if _WRF_EXACT
                   else cp.asnumpy(state.total_theta()) - np.float32(300.0)),
             **{name: cp.asnumpy(getattr(state, attribute))
                for name, attribute in CORE_DIRECT_STATE_FIELDS.items()},
@@ -784,7 +832,8 @@ def state_frame(
             "HGT": cp.asnumpy(state.ht),
         }
         # WOOF advances dry perturbation theta, the USE_THETA_M=0 record.
-        fields["THM"] = fields["T"]
+        fields["THM"] = (fields["T"] if start_t is None
+                         else cp.asnumpy(state.thp))
         if include_diagnostic_pressure:
             pb = state.pb
             pb3 = pb if pb.ndim == 3 else pb[:, None, None]
@@ -1115,8 +1164,12 @@ class WrfoutWriter:
 
     def __init__(self, path, *, nx, ny, nz, dx, dy, title="gpuwm",
                  global_attrs=None, field_schema=None, soil_layers=None,
-                 engine=None, _retain_identity_handle=False):
+                 engine=None, compression=None, _retain_identity_handle=False):
         self.engine = resolve_wrfout_engine(engine)
+        # Compressed frames are the Rust engine's container; the netCDF4
+        # workaround engine keeps writing what it always wrote.
+        self.compression = (resolve_history_compression(compression)
+                            if self.engine == "rust" else "none")
         self.publication_revision = None
         self._publication_file = None
         self._retain_identity_handle = _retain_identity_handle
@@ -1161,7 +1214,12 @@ class WrfoutWriter:
         self._final_path = Path(os.path.abspath(path))
         self._final_path.parent.mkdir(parents=True, exist_ok=True)
         self._temp_path = unique_temp_path(self._final_path, hidden=True)
-        if self.engine == "rust":
+        if self.engine == "rust" and self.compression == "deflate":
+            from gpuwm.io.classic_tape import NETCDF4_DEFLATE
+            self.ds = _ClassicTape(
+                self._temp_path, container=NETCDF4_DEFLATE,
+                netcdf4_options=_history_netcdf4_options())
+        elif self.engine == "rust":
             self.ds = _ClassicTape(self._temp_path)
         else:
             self.ds = netCDF4.Dataset(
@@ -1716,6 +1774,26 @@ def wrf_axis_array(name, array, *, nx: int, ny: int, nz: int):
     return lifted
 
 
+def _wrf_start_history_t(state):
+    """Strict mode: the T a domain's frame writes when it is not t_2, or ``None``.
+
+    WRF's history T is th_phy_m_t0, which only the input sets before the
+    first step; THM is t_2.  A WRF-file nest's adjust_tempqv and a parent's
+    initial feedback move t_2 but not th_phy_m_t0, so until the domain's
+    first step (no carried strict muts yet) T is the file's word
+    (gpuwm.ingest.wrfinput_nest_initial.finish_strict_nest_start).
+    """
+    if not _WRF_EXACT:
+        return None
+    from gpuwm.state_serialization_contract import WRF_MUTS_SLOT
+    start_t = getattr(state, "_wrf_start_history_t", None)
+    if start_t is not None and state.existing_scratch(WRF_MUTS_SLOT) is None:
+        return start_t
+    # After the first step: th_phy_m_t0 where it parts from t_2, a
+    # parent's (gpuwm.core.nest_round_trip.th_phy_m_t0_after_step).
+    return getattr(state, "_wrf_th_phy_m_t0", None)
+
+
 def _device_state_frame(state, *, include_diagnostic_pressure: bool = True):
     """Build the standard frame as live device arrays for side-stream D2H."""
     import cupy as cp
@@ -1725,14 +1803,16 @@ def _device_state_frame(state, *, include_diagnostic_pressure: bool = True):
         phb = state.phb
         if phb.ndim == 1:
             phb = cp.broadcast_to(phb[:, None, None], (phb.size, ny, nx))
+        start_t = _wrf_start_history_t(state)
         fields = {
-            "T": (state.thp if _WRF_EXACT
+            "T": (cp.asarray(start_t) if start_t is not None
+                  else state.thp if _WRF_EXACT
                   else state.total_theta() - cp.float32(300.0)),
             **{name: getattr(state, attribute)
                for name, attribute in CORE_DIRECT_STATE_FIELDS.items()},
             "PHB": phb, "MUB": state.mub2d, "HGT": state.ht,
         }
-        fields["THM"] = fields["T"]
+        fields["THM"] = fields["T"] if start_t is None else state.thp
         if include_diagnostic_pressure:
             pb = state.pb
             pb3 = pb if pb.ndim == 3 else pb[:, None, None]
@@ -1755,6 +1835,9 @@ def _device_state_frame(state, *, include_diagnostic_pressure: bool = True):
         fields.update(_live_state_history_fields(state))
         if getattr(state, "physics", None) is not None:
             fields.update(state.physics.output_fields())
+        if _WRF_EXACT and getattr(state, "_wrf_frame_round_trip_due", False):
+            from gpuwm.core.nest_round_trip import round_tripped_frame_fields
+            fields = round_tripped_frame_fields(state, fields)
         return fields
 
 
@@ -3220,9 +3303,12 @@ class PerDomainWrfoutWriters:
         # frame off the full lattice carries only the quick-look subset
         # and is written beside the tape, never as a wrfout_d* file.
         quicklook = quicklook_selection(node, ticks)
+        static_attrs = {}
         if quicklook is not None:
             path = quicklook_path(base_dir, valid_time, node.cfg.grid_id)
             path.parent.mkdir(parents=True, exist_ok=True)
+            quicklook, static_attrs = self._quicklook_static(
+                node, quicklook, moving=segment is not None)
         # SAME-RUN duplicates only.  The breakage this names is a lifecycle
         # or restart boundary publishing one valid time twice inside a
         # single run: the second frame's atomic replace destroys the first,
@@ -3291,6 +3377,9 @@ class PerDomainWrfoutWriters:
                 getattr(node.state, "physics", None))
         frame_attrs = (None if not carrier_attrs
                        else {**writer.global_attrs, **carrier_attrs})
+        if static_attrs:
+            frame_attrs = {**(writer.global_attrs if frame_attrs is None
+                              else frame_attrs), **static_attrs}
         phase = f"history-d{int(node.cfg.grid_id):02d}"
         if streamed is not None:
             # A streamed domain's numbers live in the pinned host store;
@@ -3341,6 +3430,29 @@ class PerDomainWrfoutWriters:
                 global_attrs=frame_attrs,
                 completed_observer=committed,
                 history_selection=quicklook)
+
+    def _quicklook_static(self, node, selection, *, moving: bool):
+        """(selection, global attributes) for one quick-look frame.
+
+        A fixed domain's quick-look frame leaves PHB out and names the
+        domain's first full frame (``../wrfout_dNN_<first history time>``)
+        in :data:`~gpuwm.io.history_selection.STATIC_FRAME_ATTR`, where a
+        reader finds it.  A domain that moves (a follow, or relocation
+        episodes) keeps PHB in every frame and names nothing.
+        """
+        from gpuwm.io.history_selection import (QuickLookSelection,
+                                                STATIC_FRAME_ATTR)
+
+        if not isinstance(selection, QuickLookSelection):
+            return selection, {}
+        if moving or getattr(node.cfg, "follow", None) is not None:
+            return selection.on_moving_domain(), {}
+        spec = node.clock.spec
+        first = self.start_time + timedelta(seconds=float(Fraction(
+            int(spec.start_ticks) + int(spec.history_begin_ticks),
+            int(node.clock.tick_den))))
+        name = wrfout_filename(first, node.cfg.grid_id)
+        return selection, {STATIC_FRAME_ATTR: f"../{name}"}
 
     def durability_barrier(self):
         """A callable that waits, on any thread, for every frame queued now.

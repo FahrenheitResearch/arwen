@@ -180,8 +180,10 @@ _DPD = F(F(360.0) / F(365.0))
 #: for 0 and 1.  aer_opt = 3 (Thompson aerosol shortwave optics) is
 #: implemented by this adapter; validate_radiation_driver_options admits
 #: 0, 1, 2 and 3; resident-nest aer_opt=1 refuses with its missing parent forcing path.
-_PINNED_OPTIONS = {"cldovrlp": 2, "idcor": 0,
-                   "ghg_input": 0}
+_PINNED_OPTIONS = {"cldovrlp": 2, "idcor": 0}
+#: ghg_input 0 (fixed gases, CO2 a REAL(4) function of year) and 1 (the
+#: CAMtr table re-interpolated at every call, gpuwm.core.camtr_gases).
+_ADMITTED_GHG_INPUT = (0, 1)
 _ADMITTED_AER_OPT = (0, 1, 2, 3)
 
 
@@ -1406,10 +1408,14 @@ class RRTMGLegacyRadiation:
                  p_top=None, column_chunk=None, ozone_parent=None,
                  o3input=2, longwave=True, shortwave=True, trace_gas_overrides=None,
                  ozone_routing=None, aer_opt=0, smoke_provider=None,
-                 aer3_type_source="rural", transported_smoke=None):
+                 aer3_type_source="rural", transported_smoke=None,
+                 ghg_input=0):
         if not isinstance(start_time, datetime):
             raise TypeError("radiation_start_time must be a datetime")
         self.start_time = start_time
+        if int(ghg_input) not in _ADMITTED_GHG_INPUT:
+            raise ValueError(f"ghg_input must be 0 or 1, got {ghg_input!r}")
+        self.ghg_input = int(ghg_input)
         self.longwave = bool(longwave)
         self.shortwave = bool(shortwave)
         if not (self.longwave or self.shortwave):
@@ -1665,7 +1671,7 @@ class RRTMGLegacyRadiation:
             "icld": 2,
             "idcor": 0,
             "o3input": self.o3input,
-            "ghg_input": 0,
+            "ghg_input": self.ghg_input,
             "aer_opt": self.aer_opt,
             "column_chunk": self.column_chunk,
             "p_top": self.p_top,
@@ -1714,6 +1720,9 @@ class RRTMGLegacyRadiation:
             identity["spectra"] = {"lw": self.longwave, "sw": self.shortwave}
         if self.trace_gas_overrides:
             identity["trace_gas_overrides"] = dict(self.trace_gas_overrides)
+        if self.ghg_input == 1:
+            from gpuwm.core.camtr_gases import camtr_identity
+            identity["ghg_source"] = camtr_identity()
         return identity
 
     # ------------------------------------------------------------------
@@ -1730,6 +1739,11 @@ class RRTMGLegacyRadiation:
                     f"rrtmg_legacy implements only {name}={pinned} "
                     f"(dossier section 1); got {name}={value!r} -- no "
                     "silent option substitution is applied")
+        if int(getattr(cfg, "ghg_input", 0)) != self.ghg_input:
+            raise ValueError(
+                f"adapter was constructed for ghg_input={self.ghg_input} but "
+                f"the run config requests ghg_input={cfg.ghg_input}; rebuild "
+                "the adapter so its gases and restart identity match")
         aer_opt = int(getattr(cfg, "aer_opt", 0))
         if aer_opt not in _ADMITTED_AER_OPT:
             raise NotImplementedError(
@@ -2314,6 +2328,19 @@ class RRTMGLegacyRadiation:
         from gpuwm.core.trace_gases import LEGACY_LW_GASES, LEGACY_SW_GASES, trace_gas_subset
         lw_gases = trace_gas_subset(self.trace_gas_overrides, LEGACY_LW_GASES) or None
         sw_gases = trace_gas_subset(self.trace_gas_overrides, LEGACY_SW_GASES) or None
+        file_gases = None
+        if self.ghg_input == 1:
+            # RRTMG_LWRAD/RRTMG_SWRAD: IF (GHG_INPUT .EQ. 1) CALL
+            # read_CAMgases(yr, julian, ...) at every call
+            # (module_ra_rrtmg_lw.F:11968, module_ra_rrtmg_sw.F:10553).
+            # Explicit overrides still win, as they win over ghg_input=0.
+            from gpuwm.core.camtr_gases import camtr_trace_gases
+            from gpuwm.core.trace_gases import FileGases
+            file_gases = camtr_trace_gases(yr, julian)
+            lw_gases = FileGases({**trace_gas_subset(file_gases, LEGACY_LW_GASES),
+                                  **(lw_gases or {})})
+            sw_gases = FileGases({**trace_gas_subset(file_gases, LEGACY_SW_GASES),
+                                  **(sw_gases or {})})
         day_seconds = F(86400.0)
 
         # ---- LW: all columns, adapter chunk == engine chunk -----------

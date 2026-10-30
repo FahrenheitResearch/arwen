@@ -47,6 +47,12 @@ CAMPAIGN_IMPLICIT_RUN_KEYS = {
     "lake_state_source": "auto",
     "lake_state_path": "",
     "lake_state_accept_licence": "",
+    # 2.9.10 (fix/wrf461-2dom-exact): WRF's ghg_input, read only by legacy
+    # RRTMG and RRTM longwave; 0 (the engine's fixed gases) is absent so
+    # every earlier checkpoint resumes and every public document keeps its
+    # bytes, and 1 binds.  Named breakage: with it always present every
+    # checkpoint digest, echo and public document moved (2.9.10 pass 2).
+    "ghg_input": 0,
 }
 
 #: lane/cap-seaice: prognostic sea ice and its parameters are read only

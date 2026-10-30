@@ -1799,6 +1799,18 @@ class RunConfig:
     # counters.  Appended last, keyword-only: it sat positionally after
     # `nested` and shifted every later positional argument.
     nest_accumulation_archive: bool = _config_field(default=True, kw_only=True)
+    # WRF &physics ghg_input: 0 = fixed gases (CO2 a function of year),
+    # 1 = time-varying CO2/N2O/CH4/CFC-11/CFC-12 from the CAMtr SSP245
+    # table (gpuwm.core.camtr_gases), re-interpolated at every radiation
+    # call as WRF's RRTMG and RRTM longwave wrappers do; one tree-wide
+    # value, inert on a domain whose radiation reads no gases (as in WRF).  The WRF v4 Registry
+    # default is 1; the namelist importer writes 1 for a namelist named as
+    # V4 that omits the key.  The engine's own default stays 0 so
+    # configurations authored before the key keep their gases.  Appended
+    # last, keyword-only (2.9.10 fix batch 2): it sat positionally after
+    # o3input and shifted every later positional argument; 0 is absent from
+    # checkpoint and document identities (gpuwm.checkpoint_identity).
+    ghg_input: int = _config_field(default=0, kw_only=True)
 
 #: The ways a domain's clock meets the measured terrain rules
 #: (:attr:`RunConfig.terrain_clock`).
@@ -6662,6 +6674,10 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             "o3input must be 0 (legacy-RRTMG wrapper O3DATA) or 2 "
             f"(CAM climatology), got {cfg.o3input}."
         )
+    if cfg.ghg_input not in (0, 1):
+        raise ConfigurationRefused(
+            "ghg_input must be 0 (fixed RRTMG gases) or 1 (CAMtr "
+            f"time-varying gases), got {cfg.ghg_input}.")
     if cfg.use_mp_re not in (0, 1):
         raise ConfigurationRefused(
             "use_mp_re must be 0 (legacy-RRTMG calculated radii) or 1 "

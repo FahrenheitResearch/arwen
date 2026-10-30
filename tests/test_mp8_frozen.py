@@ -570,8 +570,18 @@ FROZEN_MODULE_DIGESTS = {
         # strict words are graded in tests/test_wrf_exact_round3_gpu.py and against
         # WRF's own dumped words (tools/wrf_exact_localize).  Previously
         # 7b348c87/f3da804e.
-        '38ee5c0218f0d542a98079a47ff0f430086d8f9b7232ece705d8b605aaabb9d1',
-        '4418fe6f646c836513e508ebc44a80170c2ca4e0f82e33e304b13e849e1410ca'),
+        # Re-pinned for c61736da9 (Pin nest preparation EOS to host FP32
+        # arithmetic, folded into 2.9.10 as eced9efd6c): calc_p_alpha's log1pf
+        # and powf are spelled EOS_LOG1P/EOS_POW, which become the pinned
+        # plm_log1pf/gfk_pow only under GPUWM_PREPARATION_EOS (the nest
+        # preparation loader) and stay log1pf/powf everywhere else.  Reading:
+        # the 2.9.10 GPU suite at a613224e3a (this edit included) kept all six
+        # default-forecast identity arms identical to the f0195d80ac1b
+        # reference, and CPU and CUDA nest preparation agree in 0 of
+        # 18,170,276 values on the 00Z ICON-EU moving-nest case.  Previously
+        # 38ee5c02/4418fe6f.
+        'f611da1651af581955fcb8bf3e0b2b12cd8c8f11058e555194c091bbb478b0b7',
+        '40e9e6cb687a54a8f1489aa6d92aa496ed6a646e3a506b4a34030dcbd5d00a16'),
     'diff6': (
         # Re-pinned for the compiled WRF v4.7.1 diffusion oracle (83fde6032,
         # merged dd4908a0f): sixth-order filtering supplies each field's
@@ -1809,8 +1819,15 @@ FROZEN_MODULE_DIGESTS = {
         # steps x 110 columns x 34 outputs, 67,320 words each) are
         # byte-identical to the previous source under GPUWM_NUMERICS=fast and
         # =strict.  Previously 044c3246/45a053bb.
-        '09ff5be4fdcc47bae59531da801bcd5dd55653df991497052bac01023cca1ea7',
-        '010efce33618d4c03993af9fd92ea1466e0139ffcd6edc56854b573ffc308142'),
+        # Re-pinned 2.9.10 (fix/sfclayrev-strict-o2-squares): the four x**2.
+        # powers of psim/psih_unstable_full are products, as the pinned strict
+        # wrf.exe 4.6.1 (gfortran 13.3 -O2) folds them; as powf calls they put
+        # 1-ULP surface fluxes in 3 of 12,000 UAE 9 km columns after one
+        # physics-on step.  Graded against the strict-recipe oracle
+        # (tools/sfclayrev_wrf461_oracle/build_strict.sh).  sfclay is not an
+        # mp=8 translation unit.  Previously 09ff5be4/010efce3.
+        '4b12d778f6407625c625ee59601ee4816ace432b25c2491b0045837b7d0fc95b',
+        'b0a08e1841ab782c6e4b59cac7fb18c384b8b0c94a6b307cc4e32a8c826a4afb'),
     'smag2d': (
         # Re-pinned on the 1.5 integration line: feature/les-integration's
         # verified km_opt=2/3 work edits smag2d.cu after this table was

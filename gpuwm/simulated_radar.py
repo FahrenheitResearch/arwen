@@ -20,6 +20,54 @@ from gpuwm.simulated_radar_config import (
     validate_history_selection,
 )
 
+
+def history_missing_columns(path) -> tuple[str, ...] | None:
+    """What the radar needs that this history frame does not carry, from the frame's own header.
+
+    ``()`` when the frame carries the vertical atmosphere ``rw_simradar``
+    beams through (the variables and mass dimensions of its header admission,
+    rw-simradar input_contract.rs ``validate_history``, as
+    :func:`gpuwm.simulated_radar_capabilities.input_contracts` lists them).
+    The names it lacks when it is a 2D display frame, such as a quick-look
+    frame (``quicklook = { history_vars }``) that keeps surface fields and
+    reflectivity but no PH, W, U or V. ``None`` when the header cannot be
+    read here (not a NetCDF file, a native-columns transport): the native
+    admission decides, as before.
+
+    Only the header is read, through the reader the history writer itself
+    validates every frame with (:func:`gpuwm.io.wrfout._validation_reader`).
+    """
+    import contextlib
+
+    from gpuwm.io.netcdf_serialization import netcdf4_session
+    from gpuwm.io.wrfout import _validation_reader
+    from gpuwm.simulated_radar_capabilities import input_contracts
+
+    contract = input_contracts()["wrf"]
+    try:
+        reader, native = _validation_reader(path)
+        # THE BREAKAGE THIS PREVENTS (2.9.10 pass 4 R7b route B, test_live_radar_scans_full_frames_and_skips_quick_look_frames):
+        # this header read runs on a domain's writer thread while another thread holds a netCDF4 session (another domain's
+        # frame write, a column-store read), and netCDF-C is not thread-safe: "NetCDF: Not a valid ID". Every netCDF4 session
+        # in the process is opened under the process-wide lock (gpuwm.io.netcdf_serialization); the native reader needs none.
+        with (contextlib.nullcontext() if native else netcdf4_session()), reader(str(path)) as dataset:
+            if getattr(dataset, "schema", None) == input_contracts()["native_columns"]["schema"]:
+                return None
+            names = set(dataset.variables)
+            winds = getattr(dataset, "RADAR_NATIVE_WINDS", None)
+            empty = [name for name in contract["required_dimensions"]
+                     if name not in dataset.dimensions or len(dataset.dimensions[name]) == 0]
+    except Exception:  # noqa: BLE001 - unreadable here: rw_simradar's own admission names it
+        return None
+    required = list(contract["required_variables"])
+    alternatives = contract["reflectivity_alternatives"]
+    required += [n for n in (alternatives[0] if alternatives[0][0] in names else alternatives[1])
+                 if n not in required]
+    if winds == contract["native_winds_marker"].split("=", 1)[1]:
+        required += contract["native_winds_variables"]
+    return tuple([n for n in required if n not in names] + [f"{n} (dimension)" for n in empty])
+
+
 @functools.lru_cache(maxsize=8)
 def _site_volume_bytes(config_json: str) -> int:
     from gpuwm import bridges, rustwx
@@ -87,6 +135,17 @@ class LiveSimulatedRadar:
     ``runner`` is called as ``runner(paths, *, outdir, config, volume_paths,
     started)``; the default resolves and admits ``rw_simradar`` here, so a
     missing or stale binary refuses before the forecast's first step.
+
+    Only histories that carry the vertical atmosphere are scanned
+    (:func:`history_missing_columns`, read from each frame's own header as
+    it lands). A 2D display frame, such as a quick-look frame between the
+    full frames, is skipped and named at :meth:`close`; a run whose every
+    frame lacks the columns refuses there, naming what they lack. THE
+    BREAKAGE THIS PREVENTS (WOOF run_19793057ff2979e3, 2026-10-29: 12 h,
+    2.25-0.75 km, full frames hourly, 5-min quick look, simulated radar):
+    the first quick-look frame (d02 18:05Z) reached ``rw_simradar``, which
+    refused it (radar_input_missing_columns: PH, W, U, V), and the stored
+    failure stopped the whole forecast five minutes in, twice.
     """
 
     def __init__(self, options, outdir, *, runner=None):
@@ -106,6 +165,8 @@ class LiveSimulatedRadar:
         self._held = {}
         self._unfinished = []
         self._reported = False
+        self._skipped = []
+        self._scanned = 0
         self._thread = threading.Thread(target=self._work, name="simulated-radar", daemon=True)
         self._thread.start()
 
@@ -117,7 +178,30 @@ class LiveSimulatedRadar:
         self.check()
         if self._closed:
             raise RuntimeError("simulated radar received history after close")
+        # Read here, on the landing, while the frame is certainly on disk: a
+        # consumer may move a quick-look frame off the box once it is drawn.
+        missing = history_missing_columns(path)
+        with self._lock:  # every domain's writer thread lands here
+            if missing:
+                self._skipped.append((int(domain), str(Path(path).resolve()), missing))
+                return
+            self._scanned += 1
         self._queue.put((int(domain), str(Path(path).resolve())))
+
+    def skipped(self) -> list[tuple[int, str, tuple[str, ...]]]:
+        """Histories not scanned because they carry no vertical atmosphere: (domain, path, what each lacks)."""
+        return list(self._skipped)
+
+    def _report_skipped(self):
+        if not self._skipped:
+            return
+        from collections import Counter
+        lacks = sorted({name for _, _, missing in self._skipped for name in missing})
+        domains = ", ".join(f"d{domain:02d} x{count}" for domain, count
+                            in sorted(Counter(d for d, _, _ in self._skipped).items()))
+        print(f"simulated radar: {len(self._skipped)} history file(s) carry no vertical atmosphere "
+              f"(no {', '.join(lacks)}; 2D display frames such as quick-look frames) and were not "
+              f"scanned: {domains}. Radar volumes come from the full history frames.", file=sys.stderr)
 
     def _started(self, process):
         with self._lock:
@@ -207,7 +291,15 @@ class LiveSimulatedRadar:
                 self.cancel()
                 self._report_unfinished()
                 raise
+            self._report_skipped()
         self.check()
+        if self._skipped and not self._scanned:
+            # Asked for and nothing to scan: a requested product never silently disappears.
+            _, path, missing = self._skipped[0]
+            raise RuntimeError(
+                f"simulated radar failed: none of the {len(self._skipped)} history file(s) carries the vertical "
+                f"atmosphere the radar beams through ({Path(path).name} lacks {', '.join(missing)}); write full "
+                "history frames, or keep those fields in the history selection")
 
     def cancel(self):
         """Stop radar for a forecast that is stopping.
@@ -328,18 +420,34 @@ def main(args):
         options["timing"] = args.timing
     config = SimulatedRadarOptions.from_mapping(options)
     paths = []
+    skipped = []
     for path in args.history:
         if path.is_dir():
             if args.input_kind == "native-columns":
                 paths.extend(sorted(path.glob("*.nc")))
             else:
                 from gpuwm.io.wrfout import iter_wrfout_files
-                paths.extend(iter_wrfout_files(path, include_temporaries=False))
+                # A run directory holds 2D display frames too (quicklook/):
+                # only histories with the vertical atmosphere are scanned.
+                for frame in iter_wrfout_files(path, include_temporaries=False):
+                    missing = history_missing_columns(frame)
+                    if missing:
+                        skipped.append((frame, missing))
+                    else:
+                        paths.append(frame)
         elif path.is_file():
             paths.append(path)
         else:
             raise ValueError(f"history input does not exist: {path}")
     paths = list(dict.fromkeys(p.resolve() for p in paths))
+    if skipped:
+        lacks = sorted({name for _, missing in skipped for name in missing})
+        print(f"simulated radar: {len(skipped)} history file(s) carry no vertical atmosphere "
+              f"(no {', '.join(lacks)}; 2D display frames such as quick-look frames) and are not "
+              f"scanned, e.g. {skipped[0][0].name}", file=sys.stderr)
+        if not paths:
+            raise ValueError(f"simulated-radar found no history with the vertical atmosphere: "
+                             f"{skipped[0][0]} lacks {', '.join(skipped[0][1])}")
     if args.estimate:
         if paths and args.input_kind == "native-columns":
             raise ValueError("--estimate reads full canonical scene headers; native-columns must first "

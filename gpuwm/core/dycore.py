@@ -4903,9 +4903,13 @@ def _wrf_reuse_diagnostics(state: DomainState) -> bool:
 
     True once an acoustic loop has left WRF's muts in this process (the
     previous step's end diagnosed them); a resumed or freshly initialized
-    state diagnoses as start_em does.
+    state diagnoses as start_em does.  A WRF-file nest's first step reads
+    the p/al its start_domain left, before press_adj moved MU and the first
+    force round-tripped its prognostics
+    (gpuwm.ingest.wrfinput_nest_initial.finish_strict_nest_start).
     """
-    return WRF_EXACT and _wrf_muts(state) is not None
+    return WRF_EXACT and (_wrf_muts(state) is not None or bool(
+        getattr(state, "_wrf_start_diagnostics_carried", False)))
 
 
 def run_steps(state: DomainState, cfg: RunConfig, n: int, *,

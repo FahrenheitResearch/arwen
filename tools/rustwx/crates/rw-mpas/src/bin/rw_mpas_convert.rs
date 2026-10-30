@@ -15,7 +15,8 @@ use rw_mpas::history::{
 };
 use rw_mpas::sha256_file;
 use rw_mpas::weights::{
-    build_weights, read_mesh_cell_spacing, read_mesh_coordinates, ON_MESH_SPACING_FACTOR,
+    build_weights, read_boundary_rings, read_mesh_cell_spacing, read_mesh_coordinates,
+    ON_MESH_SPACING_FACTOR,
 };
 use rw_mpas::window::{Window, GLOBAL_MESH_WINDOW, REGION_LATLON_SPEC_PREFIX, REGION_SPEC_PREFIX};
 use rw_store::netcdf_classic::NcFormat;
@@ -30,7 +31,7 @@ usage: rw_mpas_convert --history FILE... --mesh FILE --out-dir DIR
                        [--simulation-start YYYY-MM-DD_HH:MM:SS]
                        [--prefix NAME] [--format cdf2|cdf5] [--clobber]
                        [--json FILE] [--model-label NAME]
-                       [--remap nearest|product]
+                       [--remap nearest|product] [--keep-boundary-zone]
        rw_mpas_convert --help | --abi
 
 windows:
@@ -90,6 +91,14 @@ Every single-source frame also carries GPUWM_GRID_LABEL, the grid a plot's
 headline names: the model label (or 'mesh') and the spacing the mesh is
 known by, read from the mesh itself -- 'hex 15 km', 'hex 60-3 km' -- in
 place of WRF's 'd01' nest token and the resample grid's spacing.
+
+--keep-boundary-zone draws a limited-area mesh's boundary rings.  By default
+the window points whose nearest cell has bdyMaskCell 1-7 (rings 1-5 relaxed
+toward the boundary file, 6-7 overwritten by it every step) are left blank
+like points off the mesh, as operational limited-area products leave them;
+stdout's BOUNDARY_ZONE line and the receipt's boundary_zone say how many
+points that hid.  A mesh without bdyMaskCell (every global mesh) is
+unchanged.
 
 --remap product (single-source only) carries each field the way its quantity
 needs: linear (barycentric on the mesh's own Delaunay triangles) for state,
@@ -171,6 +180,7 @@ struct Args {
     remap: String,
     jobs: usize,
     terrain_authority: Option<PathBuf>,
+    keep_boundary_zone: bool,
 }
 
 /// One run named in a `--compose` source list.
@@ -217,6 +227,7 @@ fn parse() -> Result<Args, String> {
         // 0 = not given: sized from the frames, cores and memory in run().
         jobs: 0,
         terrain_authority: None,
+        keep_boundary_zone: false,
     };
     let mut raw = std::env::args().skip(1).peekable();
     while let Some(flag) = raw.next() {
@@ -254,6 +265,7 @@ fn parse() -> Result<Args, String> {
                 }
             }
             "--clobber" => args.clobber = true,
+            "--keep-boundary-zone" => args.keep_boundary_zone = true,
             "--json" => args.json = Some(PathBuf::from(value()?)),
             "--compose" => args.compose = Some(PathBuf::from(value()?)),
             "--compose-base-only" => args.compose_base_only = true,
@@ -774,6 +786,29 @@ fn run() -> Result<(), String> {
     let off_mesh = weights
         .mark_footprint(&footprint_spacing.spacing_metres, ON_MESH_SPACING_FACTOR)
         .map_err(|e| e.to_string())?;
+    // A limited-area mesh's boundary rings are the parent's state forced in,
+    // not this model's forecast: hidden like the off-mesh points (before the
+    // product remap is built, so every remap honours it), unless asked for.
+    // Measured breakage: weights.rs NearestCellWeights::mask_boundary_zone.
+    let boundary_zone = match read_boundary_rings(&mesh_path).map_err(|e| e.to_string())? {
+        Some(rings) => {
+            let zone_cells = rings.iter().filter(|&&r| r > 0).count();
+            let hidden = if args.keep_boundary_zone {
+                0
+            } else {
+                weights.mask_boundary_zone(&rings).map_err(|e| e.to_string())?
+            };
+            println!(
+                "BOUNDARY_ZONE\tzone_cells={zone_cells}\thidden_points={hidden}\tkept={}",
+                args.keep_boundary_zone
+            );
+            format!(
+                "{{\"rings\": \"1-7\", \"zone_cells\": {zone_cells}, \"hidden_points\": {hidden}, \"kept\": {}}}",
+                args.keep_boundary_zone
+            )
+        }
+        None => "null".to_string(),
+    };
     // The headline's grid name, from the mesh this run has just read: the
     // footprint pass already holds every cell's spacing.
     let grid_label =
@@ -1044,10 +1079,11 @@ fn run() -> Result<(), String> {
 
     if let Some(path) = &args.json {
         let body = format!(
-            "{{\n  \"schema\": \"{}\",\n  \"engine\": \"rw-mpas {} (rust)\",\n  \"product_remap\": {},\n  \"window\": \"{}\",\n  \"window_spec\": {},\n  \"window_description\": \"{}\",\n  \"grid_label\": {},\n  \"mesh_spacing_km\": {},\n  \"mesh_sha256\": \"{}\",\n  \"weights_sha256\": \"{}\",\n  \"resample_method\": \"{}\",\n  \"field_set\": \"{}\",\n  \"weights_build_seconds\": {},\n  \"frames\": [\n    {}\n  ]\n}}\n",
+            "{{\n  \"schema\": \"{}\",\n  \"engine\": \"rw-mpas {} (rust)\",\n  \"product_remap\": {},\n  \"boundary_zone\": {},\n  \"window\": \"{}\",\n  \"window_spec\": {},\n  \"window_description\": \"{}\",\n  \"grid_label\": {},\n  \"mesh_spacing_km\": {},\n  \"mesh_sha256\": \"{}\",\n  \"weights_sha256\": \"{}\",\n  \"resample_method\": \"{}\",\n  \"field_set\": \"{}\",\n  \"weights_build_seconds\": {},\n  \"frames\": [\n    {}\n  ]\n}}\n",
             rw_mpas::convert::BRIDGE_SCHEMA,
             env!("CARGO_PKG_VERSION"),
             product.as_ref().map(|r| r.summary_json()).unwrap_or_else(|| "null".to_string()),
+            boundary_zone,
             json_escape(&args.window),
             window.spec_json(),
             json_escape(window.description()),

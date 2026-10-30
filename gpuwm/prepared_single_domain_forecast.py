@@ -9524,6 +9524,7 @@ def run_prepared_forecast(
         ensemble_bootstrap=None,
         prewarmed_execution=None,
         prestaged_boundaries=None,
+        columns=None,
 ) -> dict[str, object]:
     """Restore, integrate, and publish hash-bound source-neutral history.
 
@@ -10345,6 +10346,9 @@ def run_prepared_forecast(
         # read" marker is allowed to be published.
         step_log.output_committed if step_log.enabled else None,
         None if first_products is None else first_products.frame_committed,
+        # The column store this runner owns when nobody hosts it (the
+        # subprocess route of `gpuwm go`): _route_owned_columns.
+        _columns_sink(columns),
         on_submit=step_log.frame_submitted if step_log.enabled else None)
     if landing:
         writers.attach_progress_callback(landing)
@@ -11685,6 +11689,92 @@ def _rerun_on_seal(args, inputs: PreparedForecastInputs, reason: str, *,
     return sealed, first_products, rerun_args.restart
 
 
+def _route_owned_columns(*, outdir: Path, observer, experiment=None):
+    """The any-point column store (rw-store v2) of a run nobody hosts, or ``None``.
+
+    THE BREAKAGE THIS CLOSES: ``gpuwm go`` runs this runner (and the tree
+    runner) as a subprocess with no observer, and the only ordinary
+    :class:`gpuwm.live_columns.LiveColumns` arming was the one in
+    ``gpuwm run-plan`` (``RunObserver.arm_columns``, runplan.py), so a plain
+    ``gpuwm go`` run wrote its frames and no ``columns/<domain>/*.wcol`` at
+    all (speed-output lane 2026-10-28: a regional cold run finished with two
+    full wrfout frames, no .wcol and no columns events).  Every run writes
+    its column store; this arms the same writer, cadence and switch
+    (``GPUWM_COLUMNS=off``) as run-plan, into ``<outdir>/columns``.
+
+    Not armed when a host already owns the store (an observer with
+    ``arm_columns``: run-plan arms and stops it itself, and two writers on one
+    folder would write every frame twice) or inside an ensemble session
+    (members write :class:`gpuwm.live_columns.MemberColumns`).  A store that
+    cannot start never stops the run.
+    """
+
+    from gpuwm.ensemble.runtime_context import current_session
+    if current_session() is not None:
+        return None
+    if observer is not None and getattr(observer, "arm_columns", None) is not None:
+        return None
+    from gpuwm.live_columns import LiveColumns, StateFrames, columns_enabled
+    if not columns_enabled():
+        return None
+
+    def warn(code: str, message: str, **fields) -> None:
+        print(f"prepared forecast: {code}: {message}", file=sys.stderr)
+
+    frames = None
+    if experiment is not None:
+        try:
+            frames = StateFrames.for_experiment(experiment)
+        except Exception as error:  # noqa: BLE001 - every frame on the cadence is tried instead
+            warn("columns_frames_unknown", f"{type(error).__name__}: {error}")
+    try:
+        return LiveColumns(Path(outdir) / "columns", warn=warn, frames=frames)
+    except Exception as error:  # noqa: BLE001 - a store that cannot start never stops the run
+        warn("columns_not_armed",
+             f"no column store for this run: {type(error).__name__}: {error}")
+        return None
+
+
+def _columns_sink(columns):
+    """The landing hook for the store of :func:`_route_owned_columns` (``None`` when there is none)."""
+
+    if columns is None:
+        return None
+
+    def sink(**event) -> None:
+        columns.frame_committed(domain=int(event["domain"]),
+                                valid_time=event["valid_time"], path=event["path"])
+    return sink
+
+
+def _finish_owned_columns(columns, *, halt: bool = False):
+    """End the store of :func:`_route_owned_columns`.
+
+    ``halt`` (a stop) drops what is queued; otherwise the queue and each
+    grid's last frame are written, bounded as
+    :meth:`gpuwm.live_columns.LiveColumns.stop` is.  One line says what was
+    written, on stderr: stdout carries only the run's JSON summary, which
+    callers parse (2.9.10 pass 1: the line landed on stdout ahead of the
+    summary). Nothing raised here changes the forecast's result.
+    """
+
+    if columns is None:
+        return None
+    try:
+        summary = columns.halt() if halt else columns.stop()
+    except Exception as error:  # noqa: BLE001 - the forecast's result stands
+        print(f"prepared forecast: columns_not_written: {type(error).__name__}: {error}",
+              file=sys.stderr)
+        return None
+    failed = len(summary.get("failed") or ())
+    print(f"prepared forecast: column store {'halted' if halt else 'written'}: "
+          f"{summary['files']} file(s), {summary['bytes']} bytes in "
+          f"{summary['seconds']:.1f} s -> {summary['out']}"
+          + (f" ({failed} frame(s) failed)" if failed else ""),
+          file=sys.stderr, flush=True)
+    return summary
+
+
 def _route_owned_first_products(args, *, outdir: Path, observer,
                                 started: float):
     """This runner's own renders, or ``None``.
@@ -11987,6 +12077,7 @@ def main(argv=None, *, observer=None, prestaged_boundaries=None) -> int:
     # filling.  Pure filesystem; the device is not touched here.
     kernel_cache_census = scan_kernel_cache()
     preflight_complete = False
+    columns = None
     try:
         # Timed, because it was dark and it is not free: every digest in
         # the preparation receipt is re-checked against the bytes on
@@ -12035,9 +12126,12 @@ def main(argv=None, *, observer=None, prestaged_boundaries=None) -> int:
                     preflight_seconds=preflight_seconds,
                     kernel_cache_census=kernel_cache_census,
                     restart=restart, health_debug=args.health_debug,
+                    columns=columns,
                     **({"prestaged_boundaries": prestaged_boundaries}
                        if prestaged_boundaries is not None else {}))
 
+        columns = _route_owned_columns(outdir=outdir, observer=observer,
+                                       experiment=getattr(inputs, "experiment", None))
         clock_changed = None
         try:
             report = run(inputs, first_products, args.restart)
@@ -12046,10 +12140,14 @@ def main(argv=None, *, observer=None, prestaged_boundaries=None) -> int:
             # attempt's frames and, through them, its state on the card.
             clock_changed = str(changed)
         if clock_changed is not None:
+            _finish_owned_columns(columns, halt=True)
+            columns = None
             inputs, first_products, restart = _rerun_on_seal(
                 args, inputs, clock_changed, outdir=outdir,
                 observer=observer, first_products=first_products,
                 started=started)
+            columns = _route_owned_columns(outdir=outdir, observer=observer,
+                                           experiment=getattr(inputs, "experiment", None))
             report = run(inputs, first_products, restart)
     except BaseException as error:
         # A forecast that fails before its preparation seals leaves the
@@ -12133,6 +12231,11 @@ def main(argv=None, *, observer=None, prestaged_boundaries=None) -> int:
                     hook(dict(behind.details))
                 except Exception:  # noqa: BLE001 - the refusal stands
                     pass
+        # The column store of a run that did not finish: a stop writes
+        # nothing more; a failure writes the frames it committed (as
+        # run-plan's stop_columns does).
+        _finish_owned_columns(columns, halt=isinstance(error, KeyboardInterrupt))
+        columns = None
         if first_products is not None:
             # The renders of a run that did not finish.  A stop draws
             # nothing more (the desktop kills a run 5 s after asking); a
@@ -12182,6 +12285,7 @@ def main(argv=None, *, observer=None, prestaged_boundaries=None) -> int:
                   file=sys.stderr)
             return SOURCE_BEHIND_EXIT_CODE
         raise
+    _finish_owned_columns(columns)
     if report.get("schema") == "gpuwm-ensemble-run.v1":
         print(json.dumps({"schema": report["schema"], "status": report["status"],
             "members": report["request"]["members"], "completed_seconds": report["completed_seconds"],

@@ -53,7 +53,7 @@ native workspaces (the `tools/grib1_bridge` GRIB bridges, the
 the `tools/region_global_dealias` dealiasing library, the
 `tools/nextgen_hydrofabric` hydro payload, `tools/nextgen_forcing` forcing
 `tools/nextgen_verify` gauge verification and `tools/hydro_world`, `tools/hydro_world_params`,
-`tools/nextgen_reservoir_prepare` and `tools/hydro_world_init` hydro preparation and `tools/ocean_prepare` and `tools/rw-bathy` ocean preparation and `tools/nextgen_output` hydro output workspaces, fetching their
+`tools/nextgen_reservoir_prepare` and `tools/hydro_world_init` hydro preparation and `tools/ocean_prepare` and `tools/rw-bathy` ocean preparation, `tools/nextgen_output` hydro output and `tools/rw_icechunk` Icechunk store workspaces, fetching their
 locked dependencies first; `--no-render` /
 `-NoRender` skips the renderer, the long pole of install), and a closing
 `gpuwm doctor`; it offers rustup if `cargo` is missing and is safe to
@@ -70,7 +70,7 @@ python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables     # optional: the first Thompson run stages missing tables
 gpuwm fetch-geog       # WPS_GEOG static tree: ~1.3 GB down, ~16 GB unpacked
-for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify tools/hydro_world tools/hydro_world_params tools/nextgen_reservoir_prepare tools/hydro_world_init tools/ocean_prepare tools/rw-bathy tools/nextgen_output; do
+for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify tools/hydro_world tools/hydro_world_params tools/nextgen_reservoir_prepare tools/hydro_world_init tools/ocean_prepare tools/rw-bathy tools/nextgen_output tools/rw_icechunk; do
   (cd "$workspace" && cargo fetch --locked && cargo build --release --locked --offline)
 done
 gpuwm doctor
@@ -85,7 +85,7 @@ python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables     # optional: the first Thompson run stages missing tables
 gpuwm fetch-geog       # WPS_GEOG static tree: ~1.3 GB down, ~16 GB unpacked
-foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify', 'tools\hydro_world', 'tools\hydro_world_params', 'tools\nextgen_reservoir_prepare', 'tools\hydro_world_init', 'tools\ocean_prepare', 'tools\rw-bathy', 'tools\nextgen_output') {
+foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify', 'tools\hydro_world', 'tools\hydro_world_params', 'tools\nextgen_reservoir_prepare', 'tools\hydro_world_init', 'tools\ocean_prepare', 'tools\rw-bathy', 'tools\nextgen_output', 'tools\rw_icechunk') {
   Push-Location $workspace; cargo fetch --locked; cargo build --release --locked --offline; Pop-Location
 }
 gpuwm doctor

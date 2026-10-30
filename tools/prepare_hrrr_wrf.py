@@ -795,6 +795,15 @@ def _positive_finite_seconds(raw: str) -> float:
     return value
 
 
+def _positive_count_within(count, bound) -> bool:
+    """Whether ``count`` is a whole positive count no larger than ``bound``."""
+
+    def whole(value):
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    return whole(count) and whole(bound) and 1 <= count <= bound
+
+
 def _validated_worker_receipts(
         preparation_report: dict[str, object], *, selected_backend: str,
         requested_preprocess_workers: int | None,
@@ -820,10 +829,18 @@ def _validated_worker_receipts(
             and preprocess_receipt["backend"] != selected_backend):
         raise RuntimeError(
             "HRRR preparation backend differs from the public selector")
+    # A CPU count is held to AT MOST its request and budget, never to
+    # equality: the backend caps its count by the CPUs and memory it
+    # measures when it is built, and a busy host can narrow either after
+    # the budget was taken (the host held cores 0-3 of a running session
+    # scope).  "f00 mapping used 20 native workers; expected 24" refused
+    # such a run although the count moves no byte.  More than the request
+    # or the budget is the oversubscription these checks exist for.
+    cpu_workers = preprocess_receipt.get("workers")
     if (requested_preprocess_workers is not None
             and preprocess_receipt["backend"] == "cpu"
-            and preprocess_receipt.get("workers")
-            != requested_preprocess_workers):
+            and not _positive_count_within(
+                cpu_workers, requested_preprocess_workers)):
         raise RuntimeError(
             "HRRR CPU preparation worker receipt differs from the request")
     if (not isinstance(preprocess_worker_budget, dict)
@@ -848,7 +865,7 @@ def _validated_worker_receipts(
                 or isinstance(peak_native, bool)
                 or not isinstance(peak_native, int)
                 or peak_native < 1
-                or effective_total != preprocess_receipt.get("workers")
+                or not _positive_count_within(cpu_workers, effective_total)
                 or not isinstance(jobs, list)
                 or len(jobs) != 1 + 2 * final_hour
                 or any(

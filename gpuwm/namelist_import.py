@@ -173,6 +173,66 @@ def omitted_use_theta_m(wrf_version) -> int:
     """
     return OMITTED_USE_THETA_M_BY_WRF_VERSION[wrf_line_of(wrf_version)]
 
+
+#: The engine generation selectors whose stock-WRF code changed in a V4
+#: release, as ``(selector, first release that runs the engine default,
+#: generation every earlier V4 release runs)``.  The engine defaults are
+#: the newest generations (gpuwm.core.solar DEFAULT_SOLAR_GENERATION and
+#: gpuwm.ysu_generations YSU_DEFAULT_GENERATION are WRF 4.8's; Noah-MP
+#: snow aging is WRF 4.7's; the urban water balance WRF 4.8's).  The same
+#: four rows are what a stock WRF v4.6.1 recording replays with
+#: (gpuwm.verify_exact.replay.WRF_461_REFERENCE_GENERATIONS).  Adding a
+#: release that changes a scheme is one row here.  Origin: the OU
+#: Oman-UAE case (2026-10-28, run B) imported a WRF 4.6 namelist and ran
+#: WRF 4.8's YSU entrainment cap and solar constants, because the
+#: importer only knew the line ("4").
+WRF_RELEASE_GENERATIONS = (
+    ("solar_generation", (4, 8), "wrf_461"),
+    ("ysu_version", (4, 8), "wrf_461"),
+    ("urban_water_balance", (4, 8), "wrf_471"),
+    ("noahmp_snow_age", (4, 7), "wrf_461"),
+)
+
+
+def wrf_release_of(wrf_version) -> tuple[int, ...] | None:
+    """``(major, minor[, patch])`` of a dotted WRF version, else ``None``.
+
+    A bare line ("4") names no release: the importer cannot know which V4
+    code the namelist was written for and keeps the engine defaults.
+    """
+    parts = str(wrf_version).strip().lstrip("vV").split(".")
+    if len(parts) < 2 or not all(part.isdigit() for part in parts[:3]):
+        return None
+    return tuple(int(part) for part in parts[:3])
+
+
+def wrf_version_argument(text: str) -> str:
+    """argparse type for ``--wrf-version``: a line (3, 4) or a release."""
+    import argparse
+    value = str(text).strip()
+    try:
+        wrf_line_of(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
+    if "." in value and wrf_release_of(value) is None:
+        raise argparse.ArgumentTypeError(
+            f"--wrf-version {value!r}: name a line (3, 4) or a release "
+            "such as 4.6.1")
+    return value
+
+
+def wrf_release_generations(wrf_version) -> dict[str, str]:
+    """The generation selectors a named WRF V4 release runs.
+
+    Empty for a bare line or a release at or after every row's change
+    (the engine defaults are then that release's code already).
+    """
+    release = wrf_release_of(wrf_version)
+    if release is None or release[0] != 4:
+        return {}
+    return {key: generation for key, since, generation
+            in WRF_RELEASE_GENERATIONS if release[:2] < since}
+
 #: How each import route recovers the dry-theta state it integrates.  The
 #: moist theta_m prognostic is implemented nowhere in the engine and the
 #: initial and boundary state is recovered exactly on all three routes,
@@ -1866,12 +1926,15 @@ def _wrf_cadence_minutes(key: str, n: int, minutes: float, step: Fraction,
 
     WRF never runs a fractional cadence: phys/module_physics_init.F:2148
     sets ``STEPRA = MAX(NINT(RADT*60./DT), 1)`` (STEPCU and STEPBL alike)
-    and fires the scheme on whole steps.  gpuwm's clock takes cadences as
-    whole steps too and refuses a fraction.  Named breakage: NCAR's v4.4
+    and fires the scheme on whole steps.  Named breakage: NCAR's v4.4
     CONUS 12 km namelist writes radt = 15 at a 72 s step (12.5 steps,
     which wrf.exe runs as 13) and was refused.  A commensurate cadence is
     returned unchanged; otherwise the minutes of WRF's whole-step count,
-    recorded as a fix naming both numbers.
+    recorded as a fix naming both numbers.  When those minutes have no
+    exact decimal spelling the namelist's own value is kept: since 2.9.10
+    the loader and clock round it to the same whole steps wrf.exe takes
+    (gpuwm.experiment.wrf_physics_cadences), so the refusal this branch
+    used to raise is retired.
     """
     if minutes <= 0.0:
         return minutes
@@ -1883,11 +1946,7 @@ def _wrf_cadence_minutes(key: str, n: int, minutes: float, step: Fraction,
     effective = Fraction(whole) * step / 60
     value = float(effective)
     if Fraction(str(value)) != effective:
-        raise _err("physics", key, [minutes],
-                   f"wrf.exe runs it every {whole} step(s) of "
-                   f"{_seconds_text(step)}, which is {effective} min and has "
-                   "no exact decimal spelling; write a cadence that is a "
-                   "whole number of steps")
+        return minutes
     fix("physics", f"{key}[{n + 1}]", [minutes], value,
         f"{minutes:g} min is {exact} steps of {_seconds_text(step)}; wrf.exe "
         f"runs whole steps, NINT = {whole} (phys/module_physics_init.F:2148), "
@@ -2637,7 +2696,8 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                      terrain_smoothing_precision: str | None = None,
                      wrf_version: str = WRF_VERSION_DEFAULT,
                      wrf_version_source: str | None = None,
-                     request_source: str | None = None
+                     request_source: str | None = None,
+                     preserve_wrf_mixing: bool = False
                      ) -> tuple[str, SubstitutionReport]:
     """Translate namelist.wps + namelist.input into (TOML text, report).
 
@@ -2654,6 +2714,10 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     request-default table even when its output filename is arbitrary.
     The ordinary file and parsed imports leave it unset, retaining their
     historical defaults. Supplied stock keys and generation selectors win.
+
+    ``preserve_wrf_mixing`` keeps WRF's declared/default mixing logicals
+    for the native wrfinput door. Its real-data base-profile check establishes
+    support for both values; ordinary translation keeps its existing policy.
 
     ``name`` sets ``[experiment].name`` (the CLI ``--name`` flag);
     the default is derived deterministically from the start time and
@@ -2753,7 +2817,7 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         geogrid_tbl=geogrid_tbl,
         terrain_smoothing_precision=terrain_smoothing_precision,
         wrf_version=wrf_version, wrf_version_source=wrf_version_source,
-        request_source=request_source)
+        request_source=request_source, preserve_wrf_mixing=preserve_wrf_mixing)
 
 
 #: A refused physics selector the importer cannot simply drop (the key is
@@ -3094,7 +3158,8 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                          wrf_version: str = WRF_VERSION_DEFAULT,
                          wrf_version_source: str | None = None,
                          request_source: str | None = None,
-                         source_text: str | None = None
+                         source_text: str | None = None,
+                         preserve_wrf_mixing: bool = False
                          ) -> tuple[str, SubstitutionReport]:
     """The translation itself; stops at its first refusal."""
     requested_aerosol = inp.get("physics", {}).get("aer_opt", ())
@@ -3113,6 +3178,12 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         raise TypeError("source_text must be namelist text or None")
     carried_selectors = read_physics_selector_comment(source_text or "")
     source_defaults.update(carried_selectors)
+    # A named WRF V4 release pins the generations its own code runs; the
+    # namelist's comment and the named source's table still win.
+    release_generations = {
+        key: value for key, value in wrf_release_generations(wrf_version).items()
+        if key not in source_defaults}
+    source_defaults.update(release_generations)
     if rrtmg_variant is not _AUTO_RRTMG_VARIANT:
         # Coupled modern imports omit this key and read the RunConfig
         # default, so a source fallback must not reinsert legacy there.
@@ -5158,6 +5229,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             "wrapper; a selected modern-RRTMG spectrum has no equivalent "
             "calculated-radius branch.")
     o3input = None
+    ghg_input = None
     # STATED BY THE CALLER WHERE THERE IS A CALLER TO STATE IT.  The
     # derived answer below is what a bare `gpuwm import-namelist` has
     # always produced and stays the default; a caller round-tripping its
@@ -5243,14 +5315,14 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         # O3DATA branch (o3input=0); both variants retain CAM climatology
         # (o3input=2).  Any other request would be a silent WRF semantic
         # change, so an explicit other value refuses instead of importing.
-        # Absent keys keep the established import result byte-identical
-        # (the shipped RTE+RRTMGP configurations must not change).  NOTE
-        # ghg_input's WRF Registry default is 1 (time-varying GHG from a
-        # CAMtr file when one is present in the run directory); the
-        # campaign CPU references pin ghg_input = 0 explicitly, and a
-        # mirrored run that really consumed a CAMtr file cannot be
-        # reproduced here -- that limit is documented rather than guessed
-        # at from an absent key.
+        # ghg_input: both values are implemented (gpuwm.core.camtr_gases
+        # ports WRF's CAMtr reader).  An omitted key on the WRF V4 line is
+        # the V4 Registry default 1 (Registry.EM_COMMON:2452) on the legacy
+        # arm, the one held to wrf.exe; the RTE+RRTMGP arm keeps its own
+        # dated gases unless the namelist asks for 1, so the shipped
+        # RTE+RRTMGP configurations do not change.  Origin: the OU
+        # Oman-UAE case (2026-10-28) ran fixed gases where wrf.exe 4.6.1
+        # read CAMtr, and longwave differed in every column.
         adapter_label = ("RTE+RRTMGP" if any_modern_rrtmg else "legacy RRTMG")
         raw_o3input = ph.take("o3input")
         if raw_o3input is not None:
@@ -5275,10 +5347,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                  "subcolumn walk"),
                 ("idcor", 0,
                  "constant 2500 m decorrelation is the only implemented "
-                 "choice (inert at cldovrlp=2)"),
-                ("ghg_input", 0,
-                 "the analytic year-dependent well-mixed gas formulas are "
-                 "the only implemented GHG source (no CAMtr file reader)")):
+                 "choice (inert at cldovrlp=2)")):
             raw = ph.take(key)
             if raw is None:
                 continue
@@ -5291,6 +5360,34 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                 f"the only implemented value in the {adapter_label} "
                 f"adapter ({why})")
 
+    if any_rrtmg:
+        raw_ghg = ph.take("ghg_input")
+        if raw_ghg is not None:
+            ghg_input = int(_uniform("physics", "ghg_input",
+                                     raw_ghg if isinstance(raw_ghg, list) else [raw_ghg]))
+            if ghg_input not in (0, 1):
+                raise _err("physics", "ghg_input", raw_ghg,
+                           "WRF defines ghg_input 0 (fixed gases) and 1 "
+                           "(CAMtr time-varying gases).")
+        elif (wrf_version_source is not None and wrf_line_of(wrf_version) == "4"
+              and not any_modern_rrtmg):
+            # Only for a namelist NAMED as V4 (the WRF files' TITLE through
+            # the WRF-file door, or --wrf-version): a bare import keeps the
+            # engine's fixed gases.  The operational HRRR namelist is a WRF
+            # 3.9-fork file that the bare default line ("4") does not
+            # describe, and the HRRR route's native namelist leaves
+            # ghg_input out by contract (stock-only ghg_input = 0,
+            # gpuwm.hrrr_route_inputs); with the V4 default on every import,
+            # each HRRR-route emission was refused at its round trip
+            # ("d01 ghg_input: config 1 vs namelist 0", 2.9.10 fix batch).
+            ghg_input = 1
+            defaults_applied.append(AppliedDefault(
+                key="ghg_input", value=1,
+                reason="the namelist omits ghg_input; the WRF v4 Registry "
+                       "default is 1 (time-varying CO2/N2O/CH4/CFCs from "
+                       "CAMtr_volume_mixing_ratio, SSP245 as WRF ships it)"))
+        if ghg_input == 0:
+            ghg_input = None  # the engine default: write nothing
     if not any_rrtmg and any(5 in pair for pair in radiation_pairs):
         drop('physics', 'ghg_input', ph.take('ghg_input'),
              'New Goddard uses its fixed module gas concentrations; ghg_input belongs to RRTMG')
@@ -6252,7 +6349,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     # must not reapply False after explicit True was normalized out of TOML.
     named_mix_default = source_defaults.pop("mix_full_fields", None)
     mix_full_resolved = [
-        value if diff_opt_col[index] == 1
+        value if preserve_wrf_mixing or diff_opt_col[index] == 1
         or (named_mix_default is not None and index < mix_full_supplied_count)
         else named_mix_default if named_mix_default is not None else True
         for index, value in enumerate(mix_full)]
@@ -7127,6 +7224,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                        ("seaice_threshold", seaice_threshold),
                        ("opt_thcnd", opt_thcnd),
                        ("o3input", o3input),
+                       ("ghg_input", ghg_input),
                        ("use_mp_re", use_mp_re),
                        ("seaice_albedo_default",
                         seaice_albedo_default),
@@ -7444,6 +7542,9 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         key=key, value=value,
         reason=("scheme generation explicitly carried by the namelist comment"
                 if key in carried_selectors else
+                f"scheme generation WRF {wrf_version} runs (from "
+                f"{WRF_VERSION_SOURCE_DEFAULT if wrf_version_source is None else wrf_version_source})"
+                if key in release_generations else
                 "scheme generation declared by the named source namelist"))
         for key, value in source_defaults.items())
 
