@@ -2002,8 +2002,8 @@ def test_disabled_parameter_handling_does_not_drop_active_or_unknown_settings(tm
         _import_with(tmp_path, extra_input="&stoch\n" + setting + ",\n/\n")
 
 
-def test_fdda_active_nudging_refuses_disabled_drops(tmp_path):
-    with pytest.raises(ValueError, match="nudging"):
+def test_fdda_missing_clock_refuses_disabled_drops(tmp_path):
+    with pytest.raises(ValueError, match="gfdda_interval_m"):
         _import_with(tmp_path,
                      extra_input="&fdda\n grid_fdda = 1, 1,\n/\n")
     _, report = _import_with(

@@ -313,6 +313,11 @@ class BundledArtifact:
 #: the four binaries were produced by the cut, probed by nothing, and
 #: thrown away at the end of the job.
 BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
+    BundledArtifact("rw-wind-table", "executable", "tools/wind-table",
+                    "GPUWM_RW_WIND_TABLE", "wind turbine inventories and WRF Fitch tables",
+                    # 2.9.11 (PyPI per-file limit): see rw_simradar. Opt-in
+                    # (--wind-farms); gpuwm.wind_inputs stages it on first use.
+                    on_demand=True),
     # 2.9.3: the Linux wheel measured 110,716,883 bytes against PyPI's 100,000,000-byte per-file limit
     # (rw_soundings and the NextGen tools are new), so the five observation front doors served by
     # gpuwm.obs.frontdoor (rw_mrms, rw_stage4, rw_asos, rw_goes, rw_opera), the sounding window renderer
@@ -324,7 +329,14 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "nextgen_hydrofabric", "library", "tools/nextgen_hydrofabric",
         "GPUWM_HYDROFABRIC_LIBRARY",
-        "NextGen prepared numeric payload transport into caller-owned memory"),
+        "NextGen prepared numeric payload transport into caller-owned memory",
+        # 2.9.11 (PyPI per-file limit): see rw_simradar. Hydro is opt-in
+        # (--hydro on) and its other tools are already on demand;
+        # gpuwm.hydrofabric stages this library on its first load. The
+        # terminal workspace stays in the wheel: the publish workflow's
+        # platform smoke draws `gpuwm tui --snapshot` from the installed
+        # wheel before the release's bundle is public.
+        on_demand=True),
     BundledArtifact(
         "rw_nextgen_output", "library", "tools/nextgen_output",
         "GPUWM_NEXTGEN_OUTPUT_LIBRARY", "coupled hydro history and restart publication",
@@ -442,7 +454,17 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     # Environment variable spelled to match gpuwm.rustwx's resolver.
     BundledArtifact(
         "rw_simradar", "executable", bridges.RUSTWX_CRATE_RELATIVE,
-        "GPUWM_RW_SIMRADAR", "WOOF simulated radar volumes and PPI images"),
+        "GPUWM_RW_SIMRADAR", "WOOF simulated radar volumes and PPI images",
+        # 2.9.11 (PyPI per-file limit): the C- and X-band scattering tables
+        # compiled into it (14.5 MB of float tables) took it from 6.2 to
+        # 16.6 MB compressed, and with the CUDA 12/13 kernel packs (8.3 MB)
+        # the Linux platform wheel measured 118,951,005 bytes against
+        # 100,000,000.  Simulated radar is opt-in ([simulated_radar], gpuwm
+        # simulated-radar, gpuwm.simulated_radar.simulate); every door
+        # reaches it through rustwx.require_simulated_radar_binary, which
+        # stages it from this release's bundle on its first use. With it,
+        # rw_mlexport, rw-wind-table and nextgen_hydrofabric on demand, about 96.1 MB.
+        on_demand=True),
     BundledArtifact(
         "rw_nexrad", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_NEXRAD", "radar observation ingest (the DA nowcast)"),
@@ -788,7 +810,10 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "rw_mlexport", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_MLEXPORT",
-        "machine-learning dataset export (gpuwm ml-export)"),
+        "machine-learning dataset export (gpuwm ml-export)",
+        # 2.9.11 (PyPI per-file limit): see rw_simradar. A post-run door no
+        # forecast reaches; gpuwm ml-export stages it on its first use.
+        on_demand=True),
     BundledArtifact(
         "rw_tc_fields", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_TC_FIELDS", "completed-output cyclone field mapping (gpuwm tc-tracks)",
@@ -1359,6 +1384,8 @@ def verify_source_revision(payload: bytes, *, expected: str,
 #: from the Cargo manifests and the Rust sources and refuses any it does
 #: not find covered here.
 NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
+    # Its crates.io closure resolves to the rustwx vendor tree (tools/wind-table/.cargo/config.toml).
+    "tools/wind-table": ("tools/wind-table", "tools/rustwx/vendor/crates-io"),
     "tools/rw_icechunk": ("tools/rw_icechunk",),  # completed below, after tools/rustwx
     "tools/nextgen_hydrofabric": ("tools/nextgen_hydrofabric",),
     "tools/nextgen_verify": ("tools/nextgen_verify",),

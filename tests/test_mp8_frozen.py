@@ -408,6 +408,9 @@ FROZEN_MODULE_DIGESTS = {
     # source identity metadata, not a new numerical or forecast result:
     # the named compiled-WRF and arithmetic-control tests retain that
     # authority. No kernel arithmetic moved in this re-anchoring.
+    # CONUS strict MF_VX_INV repair: imported inverse replaces a rebuilt reciprocal.
+    # Full native history at steps1/2/3: 0/265734210 words each, no missing rows;
+    # receipts conus-suite-exact/mp-rad-lsm/receipts/sol-continuation.
     'acoustic': (
         # Re-pinned for the WPHI_MAX_LEV tier ladder (LES program P2): the
         # unconditional `#define WPHI_MAX_LEV 129` became an `#ifndef`
@@ -455,8 +458,15 @@ FROZEN_MODULE_DIGESTS = {
         # strict words are graded in tests/test_wrf_exact_round3_gpu.py and against
         # WRF's own dumped words (tools/wrf_exact_localize).  Previously
         # bc2ce86b/2356c7c8.
-        '89af01f989f6a61a697fba00f1effcfe393d74016a52a5cd100a184701adbc25',
-        '22704608360351a64d84bbf90ed1574e8e62edb5b06f5deea85376d93fca5cf8'),
+        # Re-pinned for the CONUS strict MF_VX_INV repair (paper/conus-suite-exact 0e21ecf29a, folded in
+        # 2.9.11): advance_uv's and apply_emdiv's GPUWM_WRF_EXACT branches and wrf_total_divergence take the
+        # imported MF_VX_INV instead of a rebuilt reciprocal.  The row moved the file pin and left the
+        # assembled-source pin at 22704608; this is the assembled digest of the same bytes.  Reading: the
+        # 2.9.11 assembled-legacy replay (base 2.9.10 b8165c59fe vs f5e393fb8c, RTX 5070 Ti) reproduces all
+        # 132 published acoustic arrays / 305,632 words and the coordinate and driver families with 0
+        # differing words on the default route; strict words are the row's own CONUS receipts.
+        '223f21d4f97e5ae74bb3ade52d3a45d0c3538bdd711753fd428eaf7318b6cda0',
+        '116d49b68cb6a5215f2303d13d9b9320fc38c72a01d21f5f2a68e8ad788b9e08'),
     'advection': (
         # Re-pinned for A146 (a98f2482e): every float division by a compile-time
         # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
@@ -603,6 +613,9 @@ FROZEN_MODULE_DIGESTS = {
     'diffusion': (
         '00fb2e5d5550680fef154b4f67c7e282ad7ca1b170df59abdea89f888dad91ef',
         'f4958de3298bfcd764a5fd848aedfbb13938043ab91132db419408951c0a061e'),
+    # CONUS strict MF_VX_INV repair: imported inverse replaces a rebuilt reciprocal.
+    # Full native history at steps1/2/3: 0/265734210 words each, no missing rows;
+    # receipts conus-suite-exact/mp-rad-lsm/receipts/sol-continuation.
     'dycore': (
         # Re-pinned for the small-step lateral-boundary fix:
         # small_step_init_uv / small_step_finish_uv took WRF calc_mu_uv's
@@ -676,8 +689,11 @@ FROZEN_MODULE_DIGESTS = {
         # strict words are graded in tests/test_wrf_exact_round3_gpu.py and against
         # WRF's own dumped words (tools/wrf_exact_localize).  Previously
         # 6fac2471/af786cd2.
-        'b5bcc35a129fdf130f0473adc7d4500938d28007815f34c7645990b410343b20',
-        '64157bc4a97aed6e4654f34ef2b4f60479be28623c24c45b3db4b8f3b155c1fe'),
+        # Assembled pin re-read for 2.9.11 (paper/conus-suite-exact 0e21ecf29a): the row's strict MF_VX_INV
+        # edit sits inside `#if GPUWM_WRF_EXACT`; it moved the file pin above and left this one stale.
+        # Default route unchanged: the 2.9.11 assembled-legacy replay, 0 differing words in all three families.
+        '1983f89c3d44c723b8c322e8cccb611fade5ec3830c39d9002be60eda6ea8223',
+        '5d66c9b385d0fae7429db2786f9316322cf4993a2d260ca33b7a7cf849bc70b9'),
     'health': (
         # The full-state scanner now carries specified-rim geometry. It
         # changes a strict boundary residual's verdict only, never a model
@@ -810,6 +826,9 @@ FROZEN_MODULE_DIGESTS = {
         # edge/corner, velocity and scalar transport controls.
         '68a743950e30e308676fada38f96ea3139d283447028edfeb85d2d64c36441fa',
         '233391c535605271d70b32dc5ce85321cb0ed633340dae3fe2cd3ebcf08ab6ba'),
+    # CONUS strict MF_VX_INV repair: imported inverse replaces a rebuilt reciprocal.
+    # Full native history at steps1/2/3: 0/265734210 words each, no missing rows;
+    # receipts conus-suite-exact/mp-rad-lsm/receipts/sol-continuation.
     'lbc_state': (
         # Re-pinned for parent-window and child-frame coupling enumeration.
         # Full-field entry points and per-element expressions stay intact.
@@ -865,8 +884,11 @@ FROZEN_MODULE_DIGESTS = {
         # strict words are graded in tests/test_wrf_exact_round3_gpu.py and against
         # WRF's own dumped words (tools/wrf_exact_localize).  Previously
         # 27ad19be/e2e4f809.
-        'da4691da051a23f2a7445f74ffd02487599cf644c63067f32e08ddab8711859b',
-        'e650e7df539401637eb77f21617b19ffbf60ea0a88e7285fd738bb741ce8b5b6'),
+        # Assembled pin re-read for 2.9.11 (paper/conus-suite-exact 0e21ecf29a): the row's strict MF_VX_INV
+        # edit sits inside `#if GPUWM_WRF_EXACT`; it moved the file pin above and left this one stale.
+        # Default route unchanged: the 2.9.11 assembled-legacy replay, 0 differing words in all three families.
+        'b35120f7012a89b7e8b3a0da7e30ce434ae3867e1ff35fea4665e3f645a16949',
+        '1730a72093ba5b64c04aada3d8ebc94fc7c0a40ace6b1685e5fd3a04b405cdaf'),
     'morrison': (
         # MOVER: the deposition-freezing cold-trap bound, carried to the
         # engine line from lane/level5-owner 0c54221d2.  UNLIKE the two
@@ -2222,6 +2244,9 @@ STATE_ARRAY_SHAPES_MP8 = {
     'msft': (6, 8),
     'msfu': (6, 9),
     'msfv': (7, 8),
+    # CONUS strict MF_VX_INV (paper/conus-suite-exact, 2.9.11): the stored v map-factor inverse WRF keeps,
+    # ones unless a WRF input supplies it; the default route reads it nowhere.
+    'msfv_inv': (7, 8),
     'mu_pp': (6, 8),
     'mub2d': (6, 8),
     'mup': (6, 8),
@@ -2368,8 +2393,9 @@ NEST_FIELD_KINDS_MP8 = (
     'u', 'v', 'w', 't', 'ph', 'mu',
     'qv', 'qc', 'qr', 'qi', 'qs', 'qg', 'nr', 'ni',
 )
+# 2.9.11: + msfv_inv (paper/conus-suite-exact, the stored MF_VX_INV). Previously 9bf52777.
 STATE_ARRAY_SHAPES_DIGEST = (
-    '9bf527776f97f6e401d5c8084b31a58015f36c388eabba5dc3cc4eaefbaa124c')
+    '242835fbbd30e4943471ca51c572e4e5ea53fe4e2673d0f776f14c1807a3b1e8')
 #: RE-PINNED 2026-09-24: one slot added by 217e84e18,
 #: ``mp_thompson_micro_columns`` (ny, nx), WRF's per-column no_micro flag
 #: (module_mp_thompson.F:1646, :2020).  _apply_thompson takes it from the
@@ -3201,7 +3227,9 @@ def test_loader_hook_is_inert_for_every_frozen_module(r1):
     _EXPECTED_HEADERS.update({'fer_hires': ('glibc_flt32.cuh',)})
     # lane/cap-hail (97e9a3ca061): WRF's HAILCAST support and column headers,
     # prepended to the hail unit only, pinned in kernel_source_pins.json.
-    _EXPECTED_HEADERS.update({'hail': ('hailcast_support.cuh', 'hailcast_wrf.cuh')})
+    # fix/hailcast: the operational HRRR v4.1.21 HAILCAST column header
+    # (hailcast_version = "wrf_39_noaa"), pinned in kernel_source_pins.json.
+    _EXPECTED_HEADERS.update({'hail': ('hailcast_support.cuh', 'hailcast_wrf.cuh', 'hailcast_wrf39.cuh')})
     # GSD output diagnostics (f80ac46aeb, 328ce7233b): raw sources and the
     # helper-only helicity header are pinned in kernel_source_pins.json.
     # uh_diag.cu remains its own frozen translation unit, never a header.

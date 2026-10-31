@@ -2299,8 +2299,9 @@ class DailyMeanAirTemperature:
                 "window": (f"daily mean of {len(chosen)} forcing time(s) "
                            f"over {span:g} h from {start.isoformat()}"
                            + ("" if len(chosen) == day else
-                              f" (the {len(chosen)} of the day's {day} "
-                              "posted when the start state was built)")),
+                              f" (the {len(chosen)} of the day's {day} the "
+                              "source had posted when the start state was "
+                              "built)")),
                 "times": [times[index].isoformat() for index in chosen]})
         field, receipt = self._value
         if field.shape != shape:
@@ -2316,12 +2317,19 @@ class DailyMeanAirTemperature:
         """The day's forcing times that have posted, for a series read as posted.
 
         A series prepared as its leads post (``posted_positions``) averages
-        the leads already there when the start state is built, at least the
-        start time, and the receipt names them.  Breakage it prevents: a
-        nested HRRR run started while its cycle posted held its start state
-        until f023 posted (WOOF run_f530d559497471b8, 2026-10-29), and every
-        single domain until f017 of an hourly cycle.  A series read whole
-        answers every time, so its mean is the day's, as before.
+        the leads the SOURCE has posted when the start state is built (its
+        posting schedule, never how far our own fetch has got), at least the
+        start time, and the receipt names them; the reads below wait for
+        any of those leads the fetch has not moved yet.  So a live cycle
+        takes its posted leads and an archived cycle takes the whole day,
+        whatever the download cache held.  Breakage it prevents: a nested
+        HRRR run started while its cycle posted held its start state until
+        f023 posted (WOOF run_f530d559497471b8, 2026-10-29), and every
+        single domain until f017 of an hourly cycle; and, counted from the
+        fetch's own progress, an archived cycle averaged 1 of 3 leads from a
+        cold cache and 3 of 3 from a warm one (lake temperatures up to
+        2.17 K apart, 2026-10-30).  A series read whole answers every time,
+        so its mean is the day's, as before.
         """
 
         ready = getattr(self._snapshots, "posted_positions", None)

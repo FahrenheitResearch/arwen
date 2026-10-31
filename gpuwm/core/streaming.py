@@ -3322,6 +3322,8 @@ def make_stepper(state, cfg, options: StreamingOptions | None = None, *,
         decision = decide(cfg, options, machine=machine)
     if not decision.stream:
         return step
+    if getattr(cfg, "umove", 0.0) or getattr(cfg, "vmove", 0.0):
+        raise StreamingRefused("umove/vmove need resident stepping: tile scatter does not carry the initialized wind-frame marker, so tile reuse would subtract translation again")
     if build is None:
         raise StreamingRefused(
             f"{decision.explain()}, but this route wired no streamed-domain "
@@ -4696,6 +4698,8 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
     step without one -- windows once with :func:`tile_boundary_tables` and
     passes the result both ways, rather than windowing twice.
     """
+    if getattr(cfg, "umove", 0.0) or getattr(cfg, "vmove", 0.0):
+        raise StreamingRefused("umove/vmove need resident stepping: tile scatter does not carry the initialized wind-frame marker, so tile reuse would subtract translation again")
     if int(getattr(cfg, "slope_rad", 0) or 0) == 1:
         # Named breakage: the slope radiation (gpuwm.core.topo_radiation)
         # derives the slope from its neighbours and searches up to shadlen

@@ -597,6 +597,30 @@ def _contract_payload_sha256(contract: Mapping[str, object]) -> str:
     return hashlib.sha256(_canonical(contract).encode("utf-8")).hexdigest()
 
 
+def resolved_physics_contract_sha256(mp_physics: int) -> str:
+    """The ``resolved_physics_contract_sha256`` an export manifest records.
+
+    The digest of the frozen contract resolved for one microphysics
+    package, and nothing else: the exporters write it and the forecast's
+    preflight (:func:`gpuwm.prepared_single_domain_forecast.
+    _resolved_wrf_direct_contract_sha256`) recomputes it from mp_physics
+    alone, so both call this one function.  What the written files add to
+    that contract from the run configuration -- the terrain-drag
+    statistics ``topo_wind`` / ``gwd_opt`` read (``run_config`` of
+    :func:`_physics_contract_bundle`) and the land categories the static
+    has (:func:`_land_category_contract`) -- stays out of it; the export
+    binds those through ``prepared_header_sha256``, whose cache identity
+    records the run configuration.  Breakage this prevents: a digest taken
+    over the drag-extended contract made every forecast whose run has
+    ``gwd_opt`` 1 or 3 (the HRRR recipes' gwd_opt = 3) finish and then
+    exit rc=1 at the seal's preflight with "proof export source hashes
+    differ from preparation" (2.9.10, hrrr_v4_gsd41 on hrrr-native).
+    """
+
+    return _contract_payload_sha256(
+        _physics_contract_bundle(_load_contract(), int(mp_physics)))
+
+
 def _load_static_geometry_receipt(
         receipt_path: Path, static_path: Path, *,
         expected_geometry: Mapping[str, object] | None = None,
@@ -2718,8 +2742,11 @@ def export_prepared_wrf_hierarchy(
                 "mp_physics": physics_inventory.mp_physics,
                 "microphysics": physics_inventory.scheme,
                 "start_time": _date_text(domain_valid_time),
+                # The package's contract, not the drag-extended one the
+                # file was written to (resolved_physics_contract_sha256).
                 "resolved_physics_contract_sha256":
-                    _contract_payload_sha256(domain_contract_bundle),
+                    resolved_physics_contract_sha256(
+                        physics_inventory.mp_physics),
             }
 
         hierarchy = [{
@@ -3046,8 +3073,11 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
                 "static_cache_sha256": actual_static_sha256,
                 "geometry_receipt_sha256": _sha256(geometry_path),
                 "contract_sha256": _sha256(_CONTRACT_PATH),
+                # The package's contract, not the drag-extended one the
+                # files were written to (resolved_physics_contract_sha256).
                 "resolved_physics_contract_sha256":
-                    _contract_payload_sha256(contract_bundle),
+                    resolved_physics_contract_sha256(
+                        physics_inventory.mp_physics),
             },
             "files": files,
             "limitations": limitations,

@@ -46,6 +46,7 @@ _WORKSPACE_TARGET = {
     "tools/hydro_world_init": "target/release",
     "tools/ocean_prepare": "target/release",
     "tools/rw-bathy": "target/release",
+    "tools/wind-table": "target/release",
     bridges.CRATE_RELATIVE: "target/release",
     bridges.RUSTWX_CRATE_RELATIVE: "target/release",
     "tools/region_global_dealias": "target/release",

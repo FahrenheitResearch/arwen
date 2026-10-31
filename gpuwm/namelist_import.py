@@ -112,15 +112,9 @@ _REL_TOL = 1.0e-6
 #: request to nudge.
 _ACTIVE_NUDGING_SELECTORS = ("grid_fdda", "grid_sfdda", "obs_nudge_opt")
 
-#: What an active nudging request breaks, and the way out.  ONE sentence,
-#: because two doors ask this question about one namelist: the importer
-#: (which refuses) and the RW-WPS support report (whose gpuwm_runtime
-#: verdict used to answer PASS with no reasons for the very pair the
-#: importer refused).
-NUDGING_NOT_IMPLEMENTED = (
-    "FDDA nudging is not implemented; set it to 0 (or remove &fdda) -- "
-    "gpuwm will not import an active nudging request into a model that "
-    "cannot nudge.")
+FDDA_OBSERVATION_INPUT = (
+    "surface and point-observation nudging require observation forcing; "
+    "the gridded analysis source does not supply those inputs")
 
 #: The values of ``&dynamics/use_theta_m`` WRF defines.
 THETA_M_ADMITTED = (0, 1)
@@ -1463,8 +1457,6 @@ PHYSICS_PINS: tuple[tuple[str, int, str], ...] = (
 UNPORTED_PACKAGE_SELECTORS: dict[str, tuple[int, dict[int, str]]] = {
     # sf_ocean_physics is consumed by the Pollard / PWP reader below.
     "windfarm_opt": (0, {
-        1: "the Fitch wind-farm drag scheme (fitchscheme) is not ported in "
-           "this release",
         2: "the MAV wind-farm drag scheme (mavscheme) is not ported in this "
            "release",
     }),
@@ -3251,12 +3243,16 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                          "by gpuwm's direct forcing ingest"))
             if not wps[section_name] and section_name in WPS_AUXILIARY_SECTIONS:
                 drop(section_name, "*", [], WPS_AUXILIARY_SECTIONS[section_name])
-    # &fdda: an ACTIVE nudging request must refuse (importing it into a
-    # model that will not nudge is a silent trajectory change); disabled
-    # selectors and their inert companion keys drop with a reason.
+    active_fdda = False
     for key, values in active_nudging_selectors(inp.get("fdda", {})):
-        raise _err("fdda", key, values, NUDGING_NOT_IMPLEMENTED)
+        if key == "grid_fdda":
+            active_fdda = True
+        else:
+            raise _err("fdda", key, values,
+                       "FDDA_OBSERVATION_INPUT: surface and point-observation nudging need observation forcing that the gridded analysis source does not supply")
     for section_name in INPUT_DROPPED_SECTIONS:
+        if section_name == "fdda" and active_fdda:
+            continue
         if section_name in inp:
             for key, values in inp[section_name].items():
                 drop(section_name, key, values,
@@ -6150,6 +6146,28 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         radar_tendency_domains=frozenset(
             int(gid) for gid in wrfinput_radar_tendency_domains),
         grid_ids=tuple(grid_ids[:max_dom]))
+    windfarm_col = [0] * max_dom
+    windfarm_tke_factor = 0.25
+    if any(value != 0 for value in ph.entries.get("windfarm_opt", [])):
+        windfarm_col = ph.col("windfarm_opt", max_dom, 0)
+        if any(type(value) is not int or value not in (0, 1) for value in windfarm_col):
+            raise _err("physics", "windfarm_opt", windfarm_col,
+                       "only 0 (off) and 1 (Fitch) are implemented; MAV option 2 requires subgrid wakes that this coupling does not calculate")
+        if any(option and pbl != 5 for option, pbl in zip(windfarm_col, bl_pbl_col)):
+            raise _err("physics", "windfarm_opt", windfarm_col,
+                       "Fitch requires MYNN bl_pbl_physics=5; other PBL schemes do not receive the turbine TKE source")
+        ij = ph.take("windfarm_ij")
+        if ij is not None and any(value != 0 for value in ij):
+            raise _err("physics", "windfarm_ij", ij,
+                       "grid-index turbine ownership is not mapped across nested domains; use geographic windturbines.txt and windfarm_ij=0")
+        factor = ph.take("windfarm_tke_factor")
+        if factor is not None:
+            windfarm_tke_factor = _uniform("physics", "windfarm_tke_factor", factor)
+            if isinstance(windfarm_tke_factor, bool) or not isinstance(windfarm_tke_factor, (int, float)) or not math.isfinite(windfarm_tke_factor) or windfarm_tke_factor < 0:
+                raise _err("physics", "windfarm_tke_factor", factor,
+                           "must be finite and nonnegative to prevent a negative or nonfinite TKE source")
+        fix("physics", "windfarm_opt", windfarm_col, windfarm_col,
+            "Fitch GPU drag and turbine-added TKE; geographic windturbines.txt beside namelist.input")
     _consume_unported_package_selectors(ph, "physics", max_dom, drop)
     ph.finish()
 
@@ -6874,6 +6892,11 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             fire_columns["fire_smoke"] = [True] * max_dom
         fix("dynamics", "tracer_opt", tracer_values, tracer_column[0],
             "native bulk SFIRE tracer, converted from g/kg air to ug/kg dry air")
+    for key in ("umove", "vmove"):
+        values = dyn.take(key)
+        if values is not None and any(value != 0 for value in values if value is not None):
+            raise _err("dynamics", key, values,
+                       "umove/vmove require flat idealized Cartesian domains; this real-data import fixes terrain and land use to the ground, which would need translation each step")
     dyn.finish()
 
     # ---- &bdy_control -----------------------------------------------------
@@ -7155,6 +7178,8 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     ]
     if ocean_selection_explicit and ocean_settings["sf_ocean_physics"] == 0:
         lines.append("sf_ocean_physics = 0")
+    if any(windfarm_col):
+        lines.append(f"windfarm_tke_factor = {_fmt(windfarm_tke_factor)}")
     if ocean_settings["sf_ocean_physics"]:
         lines.extend(f"{key} = {_fmt(value)}" for key, value in ocean_settings.items())
         for key, value in ocean_profile_settings.items():
@@ -7378,6 +7403,8 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             lines.append(f"mix_full_fields = {_fmt(mix_full_resolved[n])}")
         if bl_pbl_col[n] != bl_pbl_col[0]:
             lines.append(f"bl_pbl_physics = {bl_pbl_col[n]}")
+        if windfarm_col[n]:
+            lines.append("wind_farms = " + _toml_string(str(Path(input_path).resolve().parent / "windturbines.txt")))
         # The km_opt=2/3 turbulence parameter row, same rule: c_k on an
         # LES child beside its parents' default is the case that opened
         # this path (see the read side above).
@@ -7535,6 +7562,16 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             legend_note=legend_note)
         lines += block_lines
         notices.append(notice)
+    fdda_section = None
+    if active_fdda:
+        from gpuwm.spectral_nudging.namelist import translate as translate_nudging
+        from gpuwm.toml_document import emit_experiment_toml
+        fdda_section = _Section("fdda", inp["fdda"], str(input_path))
+        try:
+            nudging_table = translate_nudging(fdda_section, grid_ids, drop)
+        except ValueError as error:
+            raise _err("fdda", "grid_fdda", inp["fdda"].get("grid_fdda"), str(error)) from error
+        lines.extend(("", emit_experiment_toml({"nudging": nudging_table})))
     text = "\n".join(lines) + "\n"
 
     text = with_physics_defaults_text(text, source_defaults)
@@ -7570,7 +7607,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     handled = ({(d.section, d.key) for d in dropped}
                | {(f.section, f.key) for f in fixed})
     translated: list[TranslatedKey] = []
-    for section_obj in (share, geo, tc, dm, ph, dyn, bdy, noahmp, stoch, fire):
+    for section_obj in (share, geo, tc, dm, ph, dyn, bdy, noahmp, stoch, fire) + ((fdda_section,) if fdda_section is not None else ()):
         for key in section_obj.consumed:
             if (section_obj.name, key) not in handled:
                 translated.append(TranslatedKey(section=section_obj.name,

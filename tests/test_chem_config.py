@@ -176,8 +176,17 @@ def test_the_chem_block_is_appended_after_every_older_field():
              "nest_accumulation_archive",
              # 2.9.10, keyword-only: WRF's ghg_input (fix/wrf461-2dom-exact,
              # placed last by d1e35bf2da).
-             "ghg_input"]
+             "ghg_input", "umove", "vmove",
+             # 2.9.11, keyword-only: the Fitch wind-farm controls
+             # (labs/windfarm 73cb37dd11), folded after ds-umove's frame.
+             "wind_farm_scheme", "wind_farms", "wind_farm_table",
+             "windfarm_tke_factor", "wind_farm_max_dx_m",
+             # fix/hailcast, keyword-only: the HAILCAST generation.
+             "hailcast_version"]
     assert names[-len(later):] == later
+    for field in dataclasses.fields(RunConfig):
+        if field.name in ("umove", "vmove"):
+            assert field.kw_only and field.default == 0.0
     names = names[:-len(later)]
     # The 2.9.4 capabilities campaign's keyword-only keys follow the fire
     # block: lane/cap-waves-couple, cap-hail, cap-seaice, cap-eclipse and

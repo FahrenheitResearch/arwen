@@ -3281,6 +3281,7 @@ def _initialize_boundary_sides(
                 p_top=p_top, sfcp_to_sfcp=sfcp_to_sfcp,
                 preprocess_backend=preprocess,
                 state_backend="preprocess",
+                boundary_only=True,
                 flag_sh_surface_fallback=(
                     strip_met.flag_sh_surface_fallback),
                 boundary_species=_native_boundary_species())
@@ -4748,6 +4749,11 @@ def run(args):
     restore_cached = args.prepared_cache is not None \
         and args.prepared_cache.exists()
     chain = None if restore_cached else _chained_bundle(args)
+    nudging_writer = None
+    if getattr(exp, "nudging", None) is not None and not restore_cached:
+        from gpuwm.spectral_nudging.prepared import analysis_writer_from_request
+        nudging_writer = analysis_writer_from_request(args, exp, chain,
+            tuple(model_start_time + timedelta(hours=hour) for hour in requested_hours))
     sealed_leads = _SealedBridgeLeads()
     #: As posted: the lead admission, the fetch's lead wait, and each lead's
     #: decoded-file record by lead (_decoded_lead_record).
@@ -5183,6 +5189,8 @@ def run(args):
             from gpuwm.ingest.prepared_cache import select_prepared_met_fields
 
             root_result = result
+            if nudging_writer is not None:
+                nudging_writer.write(0, root_result)
             root_aerosol_initialization = dict(
                 getattr(result, "aerosol_initialization", {}) or {})
             # Physics setup/cache writing need only this detached host subset.
@@ -5303,6 +5311,19 @@ def run(args):
                 mapping = {}
                 mapping_started = time.perf_counter()
                 hour_physical = resolve_physical_hour(hour, hour_snapshot.valid_time)
+                if nudging_writer is not None:
+                    # The ordinary boundary path keeps its exact strip arrays.
+                    # A selected analysis additionally needs the full domain;
+                    # it uses the same native mapper and column initializer.
+                    analysis, analysis_met, _, _, _ = _initialize_state(
+                        hour_snapshot, dc, grid, static, eta, {}, p_top=p_top,
+                        sfcp_to_sfcp=case_policy['sfcp_to_sfcp'],
+                        water_temperature_statics=water_statics,
+                        column_workers=f00_column_workers,
+                        surface_fallback_radius=target.surface_fallback_radius_cells,
+                        preprocess_backend=hour_preprocess, state_backend='preprocess')
+                    nudging_writer.write(requested_hours.index(hour), analysis)
+                    del analysis, analysis_met
                 if hour_physical is not None:
                     met = hour_physical.read(0 if physical_provider is not None else hour)
                     if met.valid_time != hour_snapshot.valid_time:

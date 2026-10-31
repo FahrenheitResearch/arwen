@@ -1,20 +1,20 @@
 {
   "schema": "measured-slimming-loader-source-replay-v1",
-  "base": "30c12f7ae6e7e3703d57a5e03802106efc2daf89",
-  "tip": "9ef53c7c4ec271a40845c4b3d66c6489d9d3c5c4",
+  "base": "a1d20edc5115f9e42d898a9884bfcbbc2130e80d",
+  "tip": "5428796cb07a5ae063b25a06baa4e4db1867a677",
   "source": "gpuwm/core/kernels/__init__.py",
   "before": {
-    "bytes": 56279,
-    "sha256": "cd5533e48c6b7c898aa49da76f480561c0983b1e616e5709d4f036de4a734d50"
+    "bytes": 56292,
+    "sha256": "3d93f181b37c00897e5d2d91ec0bcd8591de499d820a90dca7003599dc54b2f4"
   },
   "after": {
-    "bytes": 56279,
-    "sha256": "cd5533e48c6b7c898aa49da76f480561c0983b1e616e5709d4f036de4a734d50"
+    "bytes": 56314,
+    "sha256": "24ef95f1370e2fb0b20d55e4d920d0389cac01c3011c3d8a4d1053375bda8749"
   },
   "generator": "tools/assembled_legacy_replay.py",
   "generator_sha256": "f53f4c541b052cdbef7ad554f8aae5b4c624e91a2b40515496b2523bea9e42fb",
   "recorder": "tools/battery/loader_source_receipt.py",
-  "recorder_sha256": "14f15bb387b433fd8ece64f07dd1889295cd6a694f36920e70c9563c2e46905c",
+  "recorder_sha256": "727593211626de3dbb099b116c09417eb093c1fd866dee91a3ebfa400fe9eadd",
   "numerics": "strict",
   "measurements": {
     "coordinate": {
@@ -40,38 +40,38 @@
     }
   },
   "artifacts": {
-    "base-coordinate/source-audit.json": "8a8160db1f41612a2696b426476a5719dc66e1349a729a3b2f66e8111d313898",
-    "base-coordinate/direct-native-proof.json": "2cb25a62c9a473fae602bbc064f4fd1d22ba74d861b2220f53b5bcf45632e33d",
-    "tip-coordinate/source-audit.json": "21c360507ca0450eefd938cc5d059cfece3c5c73f988c3faa561b6b17917e2be",
-    "tip-coordinate/direct-native-proof.json": "32d1a59d5ba6ab4828ae886b0f85a73970fdd7be16b9fe41df126f5dc1eb2873",
-    "base-drivers/source-audit.json": "a3e854576346482a02feddc0bafcbabdc6c5cd8e7f9a1bbfbcd00d2d5a767a04",
-    "base-drivers/horizontal-driver.json": "5db3a9264506551d760f34e81137ba528177718489d92bc2feb3694594b7cc94",
-    "base-drivers/vertical-driver.json": "ee7dba7a50dfb80ceff910fc8c635acf8f9c7d0cb2b99dc66004d83cbfdf9d4b",
-    "base-drivers/km-mutations.json": "16cbcff5d338baaaaa37fae927d78e008eaf5ba541c29801c3b66510c892c537",
-    "tip-drivers/source-audit.json": "97896290142a04d7cf3b2eee1e1e57a24d54c30a3d920b2b85039d63c423ad29",
-    "tip-drivers/horizontal-driver.json": "5db3a9264506551d760f34e81137ba528177718489d92bc2feb3694594b7cc94",
-    "tip-drivers/vertical-driver.json": "ee7dba7a50dfb80ceff910fc8c635acf8f9c7d0cb2b99dc66004d83cbfdf9d4b",
-    "tip-drivers/km-mutations.json": "16cbcff5d338baaaaa37fae927d78e008eaf5ba541c29801c3b66510c892c537",
-    "base-acoustic/source-audit.json": "fddb44d05137b6ab868f42789e0ba78ab357f620a55a79e3beaaf7b19b6cf550",
-    "base-acoustic/acoustic-published-default-proof.json": "3870da5a9fbef1155d4217122366cc2eeaf20789257f7ebab239a05c57199b49",
-    "tip-acoustic/source-audit.json": "32fe0ca909f0fdc8e1f9a88c6c077006ae12f9ae138ef0dd540fa149a2dd4a59",
-    "tip-acoustic/acoustic-published-default-proof.json": "ca0dd35476f86a33788a090cfb76912a6ff1e878006eab8ca9f1fd196ec5b9e3"
+    "base-coordinate/source-audit.json": "1a135a97cda0ec31a922d475b3ff06f6227a11c01a5df286b8093f256b3a86ef",
+    "base-coordinate/direct-native-proof.json": "1eeef9377ee6f6c7e3d5afb3a348b15f0728f1dbcad5b3ae1a2ec2cb155071fd",
+    "tip-coordinate/source-audit.json": "1eca20838541dd9b95de2536ce826c8dd99a297d5d2c8b70fa364acd0a6d1b36",
+    "tip-coordinate/direct-native-proof.json": "0ddfb5b2219086be74c0429ae9f3c375d36c030a505df841c9269c5a1fcca9dc",
+    "base-drivers/source-audit.json": "17f4d678b08565aa6d4cb6240059381ebc8bcd155b98f34892bda7af126b5508",
+    "base-drivers/horizontal-driver.json": "8ff6239a15366c2794e0442e243958c103eb8084a90603c28ea22a5374e9936b",
+    "base-drivers/vertical-driver.json": "fd8e38c84b3e2153e0f41d4d8e4f7d817664fd2b78b608aa5156a9d54081c936",
+    "base-drivers/km-mutations.json": "b586de7aad2a6bc7736e35e4bdb73b8cdfe0d39a70f37c037467abf30337cdd6",
+    "tip-drivers/source-audit.json": "e2638e69f488f0c0f94a23ad987a0aac79bdc4d906f6b0f68c7be3fb29c421a1",
+    "tip-drivers/horizontal-driver.json": "8ff6239a15366c2794e0442e243958c103eb8084a90603c28ea22a5374e9936b",
+    "tip-drivers/vertical-driver.json": "fd8e38c84b3e2153e0f41d4d8e4f7d817664fd2b78b608aa5156a9d54081c936",
+    "tip-drivers/km-mutations.json": "b586de7aad2a6bc7736e35e4bdb73b8cdfe0d39a70f37c037467abf30337cdd6",
+    "base-acoustic/source-audit.json": "1216bdd47f387cc9d9d969b1333a5b52dbcebf5afd41ca9343b4b6a87aa4b690",
+    "base-acoustic/acoustic-published-default-proof.json": "618ff2af6ff4ea8507fb1a02fc6e973a7d221f612f317c6932f463e795fcdd5e",
+    "tip-acoustic/source-audit.json": "e42c4b76e0fe6f6591c6351fd07a7f9448340a8b70751c04f52514bc4f717def",
+    "tip-acoustic/acoustic-published-default-proof.json": "1c4f1fa41f50ff6eb94b94e4ad89d73ec2c94fc71f88e2986f1f851574f9e7d8"
   },
   "capture_identity": {
-    "device": "b'NVIDIA GeForce RTX 5070 Ti'",
+    "device": "b'NVIDIA GeForce RTX 5090'",
     "compute_capability": [
       12,
       0
     ],
     "nvrtc_version": [
       13,
-      4
+      2
     ],
     "cupy_version": "14.2.0",
     "module_source_sha256": {
       "smag2d": "e0ddc6075c1da84434eea66c55f39340e40a273c1080ae32578540a706b8e270",
       "diff_opt1": "9737655267fca7f30d0a4053008997de55a8e12f4fe552622a09f70ea994e271",
-      "acoustic": "22704608360351a64d84bbf90ed1574e8e62edb5b06f5deea85376d93fca5cf8"
+      "acoustic": "116d49b68cb6a5215f2303d13d9b9320fc38c72a01d21f5f2a68e8ad788b9e08"
     },
     "module_options": {
       "smag2d": [
@@ -110,17 +110,5 @@
     "default_acoustic_diffusion_route": false
   },
   "ysu_compiled_source_sha256": "6261061b62ef15ca30cf3746baf9177cdc1a0eafc2544937f41c674e0fd5a932",
-  "moved_sources": {
-    "gpuwm/core/dycore.py": {
-      "sealed": {
-        "bytes": 254517,
-        "sha256": "0938491e6f0525208d55a6c7e8d593b62a75418084fb988c2262952f8751f781"
-      },
-      "after": {
-        "bytes": 254812,
-        "sha256": "7a21590269ebcaaf8b32cfd0addcb36bda84a34e71d8dfbf1a961aaf637dd144"
-      }
-    }
-  },
   "pin_changes": []
 }

@@ -218,3 +218,6 @@ gpuwm/data/camtr/CAMtr_volume_mixing_ratio.SSP245 -whitespace
 # source that tools/hail_wrf461 translates; both stay byte for byte as recorded.
 tools/rustwx/crates/rw-grib2export/kernels/rrfs_upp.ptx -whitespace
 tools/hail_wrf461/upstream/module_diag_hailcast.F -whitespace
+# The operational HRRR v4.1.21 branch's HAILCAST (NOAA-EMC/HRRR 40ee6058c2, sha256 pinned in
+# tools/hail_wrf461/translate.py) stays byte for byte as fetched.
+tools/hail_wrf461/upstream_hrrr_v4121/module_diag_hailcast.F -whitespace

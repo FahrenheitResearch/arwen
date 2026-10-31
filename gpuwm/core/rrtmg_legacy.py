@@ -934,15 +934,22 @@ def _lw_static_tables():
     """
     global _LW_STATICS_CACHE
     if _LW_STATICS_CACHE is None:
-        import hashlib
         import io
         try:
-            payload = _LW_STATICS_PATH.read_bytes()
+            from gpuwm.tables import table_path, _file_state
+            from gpuwm.file_digest import sha256_file
+            path = table_path("rrtmg-lw", _LW_STATICS_PATH)
+            before = _file_state(path)
+            payload = path.read_bytes()
+            digest = sha256_file(path)
+            if _file_state(path) != before:
+                raise RuntimeError(
+                    f"RRTMG table {path} changed while being read; refusing mixed "
+                    "lookup coefficients; run gpuwm fetch-tables --schemes rrtmg-lw --from DIR --replace-damaged")
         except OSError as exc:
             raise RuntimeError(
                 "packaged LW module-DATA asset is missing: "
                 f"{_LW_STATICS_PATH} ({exc})") from exc
-        digest = hashlib.sha256(payload).hexdigest()
         if digest != RRTMG_LW_STATICS_SHA256:
             raise RuntimeError(
                 "packaged LW module-DATA asset is corrupt: sha256 "
@@ -1848,8 +1855,9 @@ class RRTMGLegacyRadiation:
         base = int(_lw.LW_BATCH_COLUMN_CHUNK)
         if base >= ncol:
             return None
-        free, _total = cp.cuda.runtime.memGetInfo()
-        free += int(cp.get_default_memory_pool().free_bytes())
+        free = _sw.sw_batch_free_device_bytes(cp)
+        if free is None:
+            return None
         for factor in self.WIDE_CHUNK_FACTORS:
             width = base * factor
             need = legacy_radiation_vram_bytes(
@@ -2638,6 +2646,13 @@ class RRTMGLegacyRadiation:
                 diagnostic_sink(elapsed_seconds=float(state.elapsed_seconds),
                     shape=(ny, nx), coszen=coszen, adapter=self, finish=True,
                     **smoke_receipt)
+
+        # WRF v4.6.1 module_radiation_driver.F:2870 recovers SW from the
+        # rounded total after the SW routine adds its heating to LW.
+        # This diagnostic round trip is also part of the wrapper contract.
+        if self.shortwave:
+            _adapter_kernel("rla_driver_sw_tendency")(
+                *blk(nz * ncol), (np.int64(nz * ncol), rthratenlw, rthratensw))
 
         # ---- driver-level SWDOWN = GSW/(1-ALBEDO) (driver line 2877) --
         swdown = cp.empty(ncol, dtype=cp.float32)

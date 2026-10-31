@@ -6035,6 +6035,9 @@ def go_main(args, *, observer=None) -> int:
     # door decided on entry without it (no_domain_geometry). Ask it again.
     from gpuwm.hydro.runtime import rebind_launch as _hydro_rebind_launch
     _hydro_rebind_launch(args, beside=True)
+    if getattr(args, "wind_farms", None) is not None:
+        from gpuwm.wind_inputs import prepare_launch as prepare_wind_launch
+        prepare_wind_launch(args)
     from gpuwm.core.resident_admission import memory_gate_override
     from gpuwm.verification_visuals import verification_scope
     enabled = getattr(args, "verify_visuals", None)
@@ -6420,6 +6423,8 @@ def _go_launch(args, *, observer=None) -> int:
         config, payload = _at_flag_cycle(args, config, payload, cycle)
     _hydro_cycle_applied(args)
     config, payload = _at_flag_tiles(args, config, payload)
+    from gpuwm.spectral_nudging.cli import at_flag as at_flag_nudging
+    config, payload = at_flag_nudging(args, config, payload)
     from gpuwm.smoke_execution import (
         at_flag_smoke, at_launch as smoke_at_launch)
     if getattr(args, "smoke", False) and _prepared_launch(args):
@@ -6431,8 +6436,14 @@ def _go_launch(args, *, observer=None) -> int:
             "prepares; a prepared bundle (--prepared-root, --restart) keeps "
             "the chemistry it was prepared with. Next: gpuwm go CONFIG --smoke.")
     config, payload = at_flag_smoke(args, config, payload)
+    from gpuwm.smoke_radiation import at_flag as smoke_radiation_at_flag
+    config, payload = smoke_radiation_at_flag(args, config, payload)
     config, payload = smoke_at_launch(args, config, payload)
     _extend_outdir(args, config, payload)
+    from gpuwm.spectral_nudging.cli import source_preparation as nudging_source_preparation
+    prepared_nudging = nudging_source_preparation(args, config, payload)
+    if prepared_nudging is not None:
+        return prepared_nudging
     if getattr(args, "prepare_only", False):
         # Decided before ANY other branch.  The registered run-plan
         # launch has no prepare-only option, so every prepare-only run
@@ -7473,9 +7484,13 @@ def _add_go_arguments(parser) -> None:
     from gpuwm.output_formats import add_arguments
     add_arguments(parser)
     import argparse
+    parser.add_argument("--nudging", choices=("off", "spectral", "grid"),
+                        help="relax toward prepared source analyses; spectral keeps only the configured large-scale modes")
     parser.add_argument("config", type=Path, nargs="?", metavar="CONFIG",
                         help="an experiment TOML from gpuwm domain; its source and "
                              "domain tree choose the preparation route")
+    parser.add_argument("--wind-farms", default=None, metavar="uswtdb|TABLE|off",
+                        help="opt-in Fitch turbine drag and TKE from USWTDB or a WRF/JSON turbine table")
     parser.add_argument("--hydro", nargs="?", const="", default=None,
                         type=lambda value: "" if value == "on" else value,
                         metavar="on|off|SETTINGS.toml", help="hydro is opt-in: --hydro on couples NextGen hydro "
@@ -7580,6 +7595,12 @@ def _add_go_arguments(parser) -> None:
     from gpuwm.smoke_execution import SMOKE_FLAG_HELP
     parser.add_argument("--smoke", action="store_true", default=False,
                         help=SMOKE_FLAG_HELP)
+    parser.add_argument("--smoke-radiation", choices=("on", "off"), default=None,
+                        help="explicit transported aerosol radiation feedback: on "
+                             "selects live SW/LW optics instead of aerosol climatology "
+                             "and shortwave-only smoke; off disables live feedback. "
+                             "Requires active optical mass rows; omitted preserves "
+                             "the recipe. See docs/solar-products.md")
     parser.add_argument("--storm-nests", default=None, metavar="N|auto|off",
                         help="storm-following fine nests that spawn on their own: "
                              "N dormant slots (or 'auto', priced from the card's "

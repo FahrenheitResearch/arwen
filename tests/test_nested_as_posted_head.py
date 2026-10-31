@@ -125,11 +125,61 @@ def test_the_inland_daily_mean_averages_the_leads_posted_at_the_start():
     field, receipt = horiz.DailyMeanAirTemperature(series)(snapshot)
     assert sorted(series.read) == [0, 1, 2]
     np.testing.assert_allclose(field, 281.0)
-    assert "the 3 of the day's 24 posted" in receipt["window"]
+    assert "the 3 of the day's 24 the source had posted" in receipt["window"]
     whole = _AirSeries(49, ready=49)
     field, receipt = horiz.DailyMeanAirTemperature(whole)(snapshot)
     np.testing.assert_allclose(field, 280.0 + 11.5)
     assert "posted" not in receipt["window"]
+
+
+def _posted_source(tmp_path, *, expected, markers):
+    """An as-posted mapped source over a posting folder: ``expected`` is each
+    lead's scheduled time, ``markers`` the leads our own fetch has moved."""
+
+    import json
+    from gpuwm.ingest.boundary_stream import (POSTED_LEAD_SCHEMA,
+                                              posted_lead_marker_name)
+    from gpuwm.mapped_direct import _PostedMappedSource
+
+    posting = tmp_path / "posting"
+    posting.mkdir(parents=True, exist_ok=True)
+    cycle = datetime(2025, 3, 14, 12)
+    rows = [{"lead": lead,
+             "valid_time": (cycle + timedelta(hours=lead)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+             "expected_at": due.strftime("%Y-%m-%dT%H:%M:%SZ")}
+            for lead, due in enumerate(expected)]
+    (posting / "schedule.json").write_text(json.dumps(
+        {"source": "hrrr-native", "cycle": "2025-03-14T12", "leads": rows}))
+    for lead in markers:
+        (posting / posted_lead_marker_name(lead)).write_text(json.dumps(
+            {"schema": POSTED_LEAD_SCHEMA, "source": "hrrr-native",
+             "cycle": "2025-03-14T12", "lead": lead, "objects": []}))
+    return _PostedMappedSource(
+        posting=posting, input_manifest=tmp_path / "input-manifest.json",
+        composition=tmp_path / "c.json", mapping=tmp_path / "m.json",
+        primary=(), supplements={}, provenance={}, contributing={}, decoders={},
+        grids=(), workers=1, output_root=tmp_path / "out",
+        source_format="grib2")
+
+
+def test_the_inland_mean_counts_the_leads_the_source_posted_not_the_cache(
+        tmp_path):
+    """Lake temperatures at a run's start followed the download cache: on the
+    archived HRRR 2025-03-14 12Z cycle a cold cache averaged 1 of 3 leads and a
+    warm cache 3 of 3, up to 2.17 K apart on 14 water cells (2026-10-30).  The
+    count is the source's posting schedule, so cold and warm agree."""
+
+    cycle = datetime(2025, 3, 14, 12)
+    due = [cycle + timedelta(minutes=50 + 2 * lead) for lead in range(3)]
+    cold = _posted_source(tmp_path / "cold", expected=due, markers=(0,))
+    warm = _posted_source(tmp_path / "warm", expected=due, markers=(0, 1, 2))
+    # Archived: every lead posted long ago, by the clock as well.
+    assert cold.posted_count() == warm.posted_count() == 3
+    assert cold.frames.posted_through() == warm.frames.posted_through() == 3
+    # Live: the leads due so far, whatever the fetch has or has not moved.
+    between = due[1] + timedelta(seconds=30)
+    assert cold.posted_count(now=between) == warm.posted_count(now=between) == 2
+    assert cold.posted_count(now=due[0]) == warm.posted_count(now=due[0]) == 1
 
 
 def test_a_child_takes_the_inland_window_its_root_chose():

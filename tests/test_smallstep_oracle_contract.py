@@ -75,7 +75,7 @@ def test_real_wrf_argument_schema_retains_every_output():
 
 
 def test_smallstep_fixture_builder_and_kernel_receipt_hashes():
-    from assembled_legacy_proofs import validate_published_acoustic
+    from assembled_legacy_proofs import sealed_source_sha256, validate_published_acoustic
 
     root = Path(__file__).resolve().parents[1]
     manifest = ORACLE_DIR / "oracle-sha256sums.json"
@@ -114,7 +114,7 @@ def test_smallstep_fixture_builder_and_kernel_receipt_hashes():
     numeric_sources = ('gpuwm/core/kernels/acoustic.cu', 'gpuwm/verify/smallstep_vertical_oracle.py', 'tools/smallstep_wrf471_oracle/vertical_workspace.py')
     oracle = 'gpuwm/verify/smallstep_vertical_oracle.py'
     for name in numeric_sources:
-        source_byte_overlay[name] = proof["source_inputs"][name]["sha256"]
+        source_byte_overlay[name] = sealed_source_sha256(root, name, proof["source_inputs"][name])
         current = hashlib.sha256((root / name).read_bytes()).hexdigest()
         if name == oracle and current != source_byte_overlay[name]:
             source_byte_overlay[name] = _moved_oracle(root, proof["source_inputs"][name], current)

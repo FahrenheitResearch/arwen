@@ -300,9 +300,29 @@ _DISPLAY_LABEL_FILES = frozenset((
 _DISPLAY_LABEL = re.compile("Re" + "cast" + " WOOF")
 
 
-def _radar_writer_masked(name: str, text: str) -> str:
-    """``text`` with the two sanctioned spellings masked, in their pinned files only."""
+#: Compiled kernel images (gpuwm/kernel_aot.py, 2.9.11).  Each pack entry
+#: carries its cubin xz-compressed and base64-encoded inside one JSON line,
+#: so a pack is binary data in text form, about 5.8 million symbols drawn
+#: from 64.  A five-letter Tier-1 name, matched without case, turns up by
+#: chance about once in 33 million positions, roughly one pack rebuild in
+#: three: the 2.9.11 pass 2 rebuild put one in kernel-pack-cuda12.json and
+#: the content scan refused the release on it.  Breakage the mask prevents:
+#: a release blocked by noise in a compiled image.  Only the encoded payload
+#: values are masked, only in these files; every key, kernel name and
+#: compiler field of the packs is still scanned, as the NUL check below
+#: already passes over raw binary assets.  A new file here is a decision.
+_ENCODED_IMAGE_FILES = frozenset({
+    "gpuwm/data/kernel-pack-cuda12.json",
+    "gpuwm/data/kernel-pack-cuda13.json",
+})
+_ENCODED_IMAGE_VALUE = re.compile(r'("cubin_xz_base64": ")[A-Za-z0-9+/=]*(")')
 
+
+def _radar_writer_masked(name: str, text: str) -> str:
+    """``text`` with the sanctioned spellings and the encoded kernel images masked, in their pinned files only."""
+
+    if name in _ENCODED_IMAGE_FILES:
+        text = _ENCODED_IMAGE_VALUE.sub(r"\1\2", text)
     if name in _DISPLAY_LABEL_FILES:
         text = _DISPLAY_LABEL.sub("DISPLAYLABEL", text)
     if name not in _RADAR_WRITER_FILES:

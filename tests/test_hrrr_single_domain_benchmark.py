@@ -2732,6 +2732,90 @@ def test_a_boundary_strip_hands_its_geodesy_to_initialize_real(monkeypatch):
         hrrr_runner._initialize_boundary_sides(
             mets, cfg, sides, [1.0, 0.7, 0.4, 0.1, 0.0], p_top=5000.0,
             width=width, preprocess_backend="cpu")
+    # A later forcing slab must use boundary-source roles, not the source
+    # selected only to initialize the start state.
+    assert seen["boundary_only"] is True
     grid = seen["grid"]
     np.testing.assert_array_equal(grid["XLAT_M"], lat[:, :width])
     np.testing.assert_array_equal(grid["XLONG_M"], lon[:, :width])
+
+
+def test_production_initial_and_lateral_times_read_their_declared_smoke_source(monkeypatch, tmp_path):
+    """The production preparer's slabs must not reread initial-only smoke.
+
+    Only file IO and numerical remapping are stubbed. The source selection is
+    the real chem table and fill_boundary_sources path used by initialize_real.
+    """
+    from datetime import timedelta, timezone
+    from pathlib import Path
+    import gpuwm.chem_source_init as source_init
+    import gpuwm.ingest.lateral_bc as lateral
+    import gpuwm.ingest.preprocess_backend as backends
+    import gpuwm.ingest.real as real
+    from gpuwm.chem_table import load
+    from gpuwm.config import RunConfig
+
+    ny, nx, width, nz = 12, 15, 3, 4
+    cfg = RunConfig(nx=nx, ny=ny, nz=nz, dx=3000., dy=3000., ztop=20000.,
+                    dt=12., run_seconds=10800., mp_physics=28,
+                    chem_sets="smoke", chem_sources="rap-native-smoke,hrrr-native-smoke",
+                    aerosol_mp_coupling="none")
+    table = load(cfg)
+    start = datetime(2023, 6, 7, tzinfo=timezone.utc)
+    reads = []
+
+    def covering(row, variables, valid_time, **kwargs):
+        reads.append((valid_time, row.name))
+        return {"hybrid_level": Path(row.name)}
+
+    def remap(table, row, frames, target, valid_time, **kwargs):
+        value = 11. if row.name == "hrrr-native-smoke" else 37.
+        return {"smoke": np.full(target.pressure.shape, value, np.float32)}, {"source": row.name}
+
+    monkeypatch.setattr(source_init, "covering_files", covering)
+    monkeypatch.setattr(source_init, "_frames", lambda *a: object())
+    monkeypatch.setattr(source_init, "files_cycle", lambda *a: start)
+    monkeypatch.setattr(source_init, "boundary_fields_for_grid", remap)
+
+    def initialize(snapshot, run, coord, terrain, *, grid, boundary_only=False, **kwargs):
+        state = SimpleNamespace(chem=SimpleNamespace(table=table),
+            chem_smoke=np.zeros((run.nz, run.ny, run.nx), np.float32),
+            set_map_coriolis=lambda *a, **k: None)
+        source_init.fill_boundary_sources(state, run, valid_time=snapshot.valid_time,
+            latlon=(grid["XLAT_M"], grid["XLONG_M"]),
+            pressure=np.ones_like(state.chem_smoke) * 80000., cache_root=tmp_path,
+            frame="boundary" if boundary_only else "initial")
+        return SimpleNamespace(state=state)
+
+    monkeypatch.setattr(real, "initialize_real", initialize)
+    monkeypatch.setattr(hrrr_runner, "_map_snapshot", lambda snapshot, *a, **k: (snapshot, 0.))
+    monkeypatch.setattr(backends, "resolve_preprocess_backend", lambda *a, **k:
+        SimpleNamespace(array_module=np, name="cpu", receipt=lambda: {}))
+    monkeypatch.setattr(lateral, "_coupled_device_fields", lambda state: {"smoke": state.chem_smoke})
+    monkeypatch.setattr(lateral, "extract_lateral_side", lambda fields, *a: fields)
+    lat, lon = np.full((ny, nx), 41.), np.full((ny, nx), -75.)
+    grid = {"XLAT_M": lat, "XLONG_M": lon}
+    static = _boundary_static(ny, nx)
+    initial = SimpleNamespace(valid_time=start, flag_sh_surface_fallback=False)
+    result, *_ = hrrr_runner._initialize_state(initial, SimpleNamespace(run=cfg), grid,
+        static, [1., .7, .4, .1, 0.], {}, p_top=5000., preprocess_backend="cpu",
+        state_backend="preprocess")
+    assert reads == [(start, "hrrr-native-smoke")]
+    np.testing.assert_array_equal(result.state.chem_smoke, np.float32(11.))
+
+    # Before the fix, omitting the role at a later time read the initial source.
+    later = SimpleNamespace(valid_time=start + timedelta(hours=1), flag_sh_surface_fallback=False)
+    initialize(later, cfg, None, static["HGT_M"], grid=grid)
+    assert reads[-1] == (later.valid_time, "hrrr-native-smoke")
+
+    sides = hrrr_runner._compact_boundary_static(static, cfg, width=width, latlon_mass=(lat, lon))
+    for hour in (1, 2, 3):
+        valid = start + timedelta(hours=hour)
+        mets = {side: SimpleNamespace(valid_time=valid, flag_sh_surface_fallback=False)
+                for side in sides}
+        reads.clear()
+        fields, *_ = hrrr_runner._initialize_boundary_sides(mets, cfg, sides,
+            [1., .7, .4, .1, 0.], p_top=5000., width=width, preprocess_backend="cpu")
+        assert reads == [(valid, "rap-native-smoke")] * 4
+        for side in fields.values():
+            np.testing.assert_array_equal(side["smoke"], np.float64(37.))

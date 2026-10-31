@@ -298,6 +298,9 @@ class LateralBoundaries:
     #: placeholder would pull OWNED cells 16 to 39 cells in from the seam
     #: toward zero wind and zero coupled theta, every step.
     seam_sides: tuple[str, ...] = ()
+    # Internal table convention; ground-coordinate inputs are converted once
+    # on attachment. Keyword-only preserves the established constructor.
+    frame_velocity: tuple[float, float] = field(default=(0.0, 0.0), kw_only=True)
 
     def __post_init__(self):
         seams = tuple(self.seam_sides)
@@ -805,6 +808,9 @@ def _reload_streaming_external_interval(
                         getattr(host_side.time_law, coefficient), dtype=xp.float32)
     resident.active_host_interval_id = id(interval)
     resident.external_reload_count += 1
+    analysis_seam = getattr(state, "_spectral_nudging_interval", None)
+    if analysis_seam is not None:
+        analysis_seam(interval)
 
 
 def boundary_storage_shapes(boundaries, *, streaming=False):
@@ -1405,7 +1411,8 @@ def _launch_state_relaxation(state, field_name, tendency, boundary, *,
         tendency, held, state.mub2d, mass_perturbation, u, v, w,
         thp, state.thb, php, scalar,
         state.c1h, state.c2h, state.c1f, state.c2f,
-        state.msft, state.msfu, state.msfv, *sides, fcx, gcx,
+        state.msft, state.msfu, state.msfv_inv if WRF_EXACT else state.msfv,
+        *sides, fcx, gcx,
         cp.float32(dtbc),
         np.int32(width), np.int32(spec_zone), np.int32(relax_zone),
         np.int32(apply_relax), np.int32(clear_specified),
@@ -1459,12 +1466,16 @@ def _coupled_device_field_items(state):
     chm = c1h * mu[None] + c2h
     chf = c1f * mu[None] + c2f
     names = _coupled_device_field_names(state)
-    u = (c1h * mux[None] + c2h) * state.u
+    u_wind, v_wind = state.u, state.v
+    if getattr(state, "_moving_frame_velocity", None):
+        from gpuwm.moving_frame import ground_relative_winds
+        u_wind, v_wind = ground_relative_winds(state)
+    u = (c1h * mux[None] + c2h) * u_wind
     if state.has_msf:
         u /= state.msfu[None]
     yield "u", u
     del u
-    v = (c1h * muy[None] + c2h) * state.v
+    v = (c1h * muy[None] + c2h) * v_wind
     if state.has_msf:
         v /= state.msfv[None]
     yield "v", v
@@ -2152,6 +2163,78 @@ def _validate_lateral_interval(state, boundaries: LateralBoundaries,
                 f"{name} boundary shape {(nz, ny, nx)} does not match "
                 f"state shape {expected}")
 
+def lateral_boundaries_in_frame(state, boundaries: LateralBoundaries) -> LateralBoundaries:
+    """Convert ground-relative coupled wind tables to the state's frame.
+
+    Mass and its tendency are staggered exactly like the boundary momentum.
+    Inputs stay immutable; reattaching the returned tables does not shift
+    them again. ``domain_boundary_snapshot`` supplies ground-relative winds.
+    """
+    from dataclasses import replace
+    speed = getattr(state, "_moving_frame_velocity", (0.0, 0.0))
+    if boundaries.frame_velocity == speed:
+        return boundaries
+    if boundaries.frame_velocity != (0.0, 0.0):
+        raise ValueError("boundary wind tables already use a different moving frame; converting again would subtract translation twice")
+    if not any(speed):
+        return boundaries
+    if getattr(boundaries.intervals, "bounds", None) is not None:
+        raise ValueError("umove/vmove need complete idealized boundary tables: lazily prepared ground-coordinate intervals cannot be shifted before they exist")
+    if state.mub is None or getattr(state, "has_msf", False):
+        raise ValueError("moving-frame boundaries require flat Cartesian mass weights; terrain/map geometry would need translation each step")
+    c1 = _host(state.c1h)[:, None, None]
+    c2 = _host(state.c2h)[:, None, None]
+
+    def faces(mass, name, side):
+        # Arrays use (level, y, x), with east/north reversed, outermost first.
+        axis = 2 if name == "u" else 1
+        normal = ((name == "u" and side in ("west", "east")) or
+                  (name == "v" and side in ("south", "north")))
+        if normal:
+            out = mass.copy()
+            dst = [slice(None)] * 3
+            lo, hi = dst.copy(), dst.copy()
+            dst[axis], lo[axis], hi[axis] = slice(1, None), slice(None, -1), slice(1, None)
+            out[tuple(dst)] = 0.5 * (mass[tuple(lo)] + mass[tuple(hi)])
+            return out
+        shape = list(mass.shape)
+        shape[axis] += 1
+        out = np.empty(shape, dtype=mass.dtype)
+        lo, hi, dst = [slice(None)] * 3, [slice(None)] * 3, [slice(None)] * 3
+        lo[axis], hi[axis], dst[axis] = slice(None, -1), slice(1, None), slice(1, -1)
+        out[tuple(dst)] = 0.5 * (mass[tuple(lo)] + mass[tuple(hi)])
+        for edge in (0, -1):
+            dst[axis] = edge
+            out[tuple(dst)] = mass[tuple(dst)]
+        return out
+
+    intervals = []
+    for interval in boundaries.intervals:
+        fields = dict(interval.fields)
+        mass = fields.get("mu")
+        if mass is None:
+            raise ValueError("moving-frame wind boundaries require mu tables: subtracting speed from mass-coupled momentum without its mass corrupts the forcing")
+        for name, offset in zip(("u", "v"), speed):
+            if not offset or name not in fields:
+                continue
+            sides = {}
+            for side in ("west", "east", "south", "north"):
+                mu, wind = getattr(mass, side), getattr(fields[name], side)
+                if mu.time_law is not None:
+                    raise ValueError("moving-frame wind boundaries require linear mu: subtracting two independent rational time laws cannot retain the current boundary representation")
+                weight = c1 * (float(state.mub) + faces(mu.value, name, side)) + c2
+                rate = c1 * faces(mu.tendency, name, side)
+                law = wind.time_law
+                if law is not None:
+                    law = RationalTimeLaw(law.quadratic - offset * rate * law.denominator_rate,
+                                          law.denominator_rate)
+                sides[side] = SideBoundary(wind.value - offset * weight,
+                                           wind.tendency - offset * rate, law)
+            fields[name] = FieldBoundary(**sides)
+        intervals.append(replace(interval, fields=fields))
+    return replace(boundaries, intervals=tuple(intervals), frame_velocity=speed)
+
+
 def attach_lateral_boundaries(state, boundaries: LateralBoundaries) -> None:
     """Attach validated, immutable specified forcing to a model state.
 
@@ -2170,6 +2253,8 @@ def attach_lateral_boundaries(state, boundaries: LateralBoundaries) -> None:
     that the two semantics can never be mixed unannounced.  A state never
     bound keeps ``clock=None`` exactly as before.
     """
+    if getattr(state, "_moving_frame_velocity", None):
+        boundaries = lateral_boundaries_in_frame(state, boundaries)
     _validate_lateral_attachment(state, boundaries)
     prestage = getattr(boundaries, "_prestage_owner", None)
     if prestage is not None and prestage.try_attach(state, boundaries):
@@ -2245,7 +2330,7 @@ def _carried_external_clock(state):
 
 
 def attach_streaming_lateral_boundaries(
-        state, boundaries: LateralBoundaries) -> None:
+        state, boundaries: LateralBoundaries, *, allow_prestaged=True) -> None:
     """Attach one reusable device mirror for an external forcing series.
 
     Host intervals remain immutable and authoritative, but only the interval
@@ -2264,6 +2349,8 @@ def attach_streaming_lateral_boundaries(
     the DOMAIN's clock right after converting; this function's preservation
     covers every later re-attachment on the same state.
     """
+    if getattr(state, "_moving_frame_velocity", None):
+        boundaries = lateral_boundaries_in_frame(state, boundaries)
     # A streamed series (gpuwm.ingest.boundary_stream) holds intervals that
     # may not be prepared yet: interval 0 is validated here, and the series
     # validates each later interval against this state as it loads it,
@@ -2273,7 +2360,7 @@ def attach_streaming_lateral_boundaries(
     _validate_lateral_attachment(
         state, boundaries, intervals=(first,) if lazy else None)
     prestage = getattr(boundaries, "_prestage_owner", None)
-    if prestage is not None and prestage.try_attach(state, boundaries):
+    if allow_prestaged and prestage is not None and prestage.try_attach(state, boundaries):
         return
     if lazy:
         reference = None
@@ -2387,6 +2474,8 @@ def attach_nest_boundaries(state, fields: Mapping[str, Mapping[str, tuple]],
     those same manifest-backed arrays in place; this function installs only
     lookup metadata and preserves the Davies-weight cache across forces.
     """
+    if getattr(state, "_moving_frame_velocity", None):
+        raise ValueError("umove/vmove with nest forcing needs nested ground geometry translated each step")
     if spec_zone < 1 or relax_zone < 2:
         raise ValueError("spec_zone must be >=1 and relax_zone >=2")
     if spec_bdy_width < spec_zone + relax_zone:
@@ -3065,6 +3154,7 @@ __all__ = ["BoundaryInterval", "FieldBoundary", "LateralBoundaries",
            "apply_state_lateral_boundaries",
            "apply_state_scalar_lateral_boundary",
            "attach_lateral_boundaries", "attach_nest_boundaries",
+           "lateral_boundaries_in_frame",
            "attach_streaming_lateral_boundaries",
            "StateBoundaryFrames", "build_lateral_boundaries",
            "build_state_lateral_boundaries",

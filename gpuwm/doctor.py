@@ -2830,6 +2830,7 @@ _CHECKED_ARTIFACTS = {
     "rw_ocean": "the `ocean preparation` line",
     "rw_bathy": "the `surge bathymetry` line",
     "rw_ocean_verify": "the `ocean SST verification` line",
+    "rw-wind-table": "the `wind turbine tables` line",
     "grib1_bridge": "the `bridge ...` lines",
     "gfs_grib2_bridge": "the `bridge ...` lines",
     "hrrr_grib2_bridge": "the `bridge ...` lines",
@@ -3743,6 +3744,11 @@ def _ml_export_check() -> Check:
     from gpuwm import ml_export
 
     binary = ml_export.BINARY
+    # On demand since 2.9.11 (PyPI per-file limit): the first export stages it.
+    row = _absent_on_demand_row(f"ML dataset exporter ({binary.name})", binary.name,
+                                binary.env_var, binary.find, "gpuwm ml-export")
+    if row is not None:
+        return row
     return _byte_contract_door_check(
         label=f"ML dataset exporter ({binary.name})", name=binary.name,
         env_var=binary.env_var, find=binary.find, remedy=binary.remedy,
@@ -4131,6 +4137,8 @@ _CAPABILITY_TOOLS = {
     "rw_ocean": ("ocean preparation", "the coupled ocean door (gpuwm.ocean.door)"),
     "rw_bathy": ("surge bathymetry", "the storm-surge door (gpuwm.ocean.surge)"),
     "rw_ocean_verify": ("ocean SST verification", "ocean SST verification (gpuwm.ocean.mixed_layer.verify)"),
+    # labs/windfarm (2.9.11): the turbine-inventory decoder behind --wind-farms.
+    "rw-wind-table": ("wind turbine tables", "the wind-farm doors (gpuwm go --wind-farms, gpuwm.wind_inputs)"),
 }
 
 
@@ -4355,6 +4363,13 @@ def _simulated_radar_check() -> Check:
                      brief=f"{SIMULATED_RADAR_ENV} names a missing file",
                      group=_GROUP_ENGINES, blocking=False, severity=SEVERITY_UNREACHABLE)
     if found is None:
+        # On demand since 2.9.11 (PyPI per-file limit): a fresh install's
+        # first radar door stages it, so the row says that, not "cannot run".
+        row = (None if os.environ.get(SIMULATED_RADAR_ENV) else
+               _on_demand_row(label, "rw_simradar",
+                              "gpuwm simulated-radar or [simulated_radar] run"))
+        if row is not None:
+            return row
         return Check(label, "missing",
                      "not staged; simulated radar cannot run" ,
                      remedy, action=build, brief="not staged; simulated radar cannot run",
@@ -7880,6 +7895,21 @@ def doctor_main(args) -> int:
               else f"gpuwm doctor: nothing recorded as changed since {since}.")
         return 0
     sources = getattr(args, "source", None) or None
+    from gpuwm.forecast_gpu import FORECAST_GPU_REQUIREMENT
+
+    # Keep driver contact isolated, like the deeper runtime checks below:
+    # a broken driver must not wedge the diagnostic's own interpreter.
+    availability = _json_probe(
+        "import json; from gpuwm.forecast_gpu import forecast_gpu_gap; "
+        "print(json.dumps({'gap': forecast_gpu_gap()}))")
+    gap = availability.get('gap')
+    if 'gap' not in availability:
+        gap = f"GPU availability probe did not complete ({availability.get('probe', 'no answer')})"
+    if gap is not None:
+        # stderr preserves --json's machine surface. Print before inventory
+        # so a no-device install gets the forecast/CPU boundary first.
+        print(f"gpuwm doctor: ForecastGPURequired: {FORECAST_GPU_REQUIREMENT} "
+              f"Detected: {gap}.", file=sys.stderr, flush=True)
     checks = collect_checks(tuple(sources) if sources else None,
                             progress=_progress_to_stderr)
     if getattr(args, "json", False):

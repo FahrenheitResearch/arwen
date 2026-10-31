@@ -946,6 +946,8 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
                                **({} if thompson_version is None else {"thompson_version":thompson_version}))
     if run_seconds is not None:
         wrfinput_window_seconds(run, run_seconds)
+    from gpuwm.tables import _ensure_for_load as ensure
+    ensure(run.experiment)
     # PLAN REVIEW, and it happens here rather than in the worker child
     # for one reason: everything below this in the supervised branch
     # takes a card.  A bad --outdir used to reach the reader as

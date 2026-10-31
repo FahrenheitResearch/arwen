@@ -1,5 +1,42 @@
 # Changelog
 
+## 2.9.11 (2026-10-30)
+
+New:
+- Build and step sounding-based domains through the versioned `gpuwm.domain` Python API, with device fields, host snapshots, overlap copies, lateral forcing and optional map placement for simulated radar.
+- Python programs can write simulated radar volumes from history or a georeferenced in-memory state with `gpuwm.simulated_radar.simulate`. Custom S-band sites accept beam width, and explicit radar fields can include spectrum width.
+- Idealized flat domains can follow a constant `umove`/`vmove` moving frame, with ground-relative surface physics and history winds.
+- Check and stage selected physics tables with `gpuwm.tables.status`, `gpuwm.tables.ensure` and `gpuwm fetch-tables --schemes`.
+- `rw_mpas_convert --grid-label TEXT` headlines a map with the view's own name and the spacing of the cells it shows, instead of the whole mesh's range.
+- `gpuwm go --nudging spectral|grid` nudges a forecast toward its source analyses (opt-in); imported WRF `grid_fdda = 1/2` namelists run instead of being refused.
+- `gpuwm go --wind-farms uswtdb|PATH` runs Fitch wind-farm drag and turbine TKE inside the GPU MYNN step (opt-in; WRF `windfarm_opt = 1` imports too), with turbine and farm power, hub wind and TKE-source history.
+- `gpuwm go --smoke-radiation on|off` selects smoke-aware radiation explicitly; omitted keeps the recipe's setting.
+- Simulated radar supports C- and X-band (TDWR and C/X agency radars) with finite-particle scattering, melting, Kdp and beam-integrated attenuation, from the CLI, the forecast's `[simulated_radar]` table and the Python API; S-band output is unchanged.
+- Ocean waves: automatic preparation from public GFS winds, GFS-Wave spectra, ETOPO 2022 and the NDBC buoy registry, buoy scoring, and wave maps (Hs, Tp, Dp, wind sea and swell) in the normal render tree.
+- `GPUWM_WRF_LIBMVEC=1` makes WRF's original Tiedtke cumulus (`cu_physics = 6`) take the libmvec `expf` in the columns WRF's stock gfortran `-O2 -ftree-vectorize` build vectorizes, so it matches that build word for word. Unset, cu6 is unchanged.
+- `hailcast_version` (per domain) selects the HAILCAST stone model: `wrf_39_noaa`, the default, is the one NOAA's operational HRRR v4 runs; `wrf_461` is WRF 4.6.1's. HAILCAST is a diagnostic, so the forecast itself is unchanged.
+
+Changed:
+- Forecast entry points explain the NVIDIA GPU requirement and the tools available without one, including direct dycore calls.
+- Forecast startup uses shipped CUDA 12/13 kernel images on sm_89/90/100/120, including direct core callers, and keeps the parallel compiler available for newly discovered requests; domain sizing indexes its scratch audit instead of rescanning it.
+- Legacy RRTMG reuses full-domain aerosol optics across radiation chunks (the steady radiation call with smoke feedback takes about a third of the time).
+- Checkpoint format 7 carries the independent MF_VX_INV map-factor words. Format 6 checkpoints are refused with that reason: finish them on their original build or start again from the initial conditions.
+- Simulated radar during a forecast scans in-memory state snapshots at the quick-look cadence, with backpressure so stalled radar work never holds the forecast; quick-look radar frames scan VCP 212's three lowest tilts.
+- A radar frame's sites are scanned in parallel under memory admission (about 2.6x faster on many-site domains).
+- Simulated radar (`rw_simradar`), ML export (`rw_mlexport`), the wind-turbine table decoder (`rw-wind-table`) and the hydro payload library (`nextgen_hydrofabric`) ship in the release bundle and are staged by their first use, so the platform wheels stay under PyPI's per-file limit; `gpuwm fetch-bridges --partial --artifact NAME` stages one ahead of time.
+
+Fixed:
+- Single-domain HRRR runs with a quick look prepare their quick-look inputs and record the right receipt cadence.
+- HAILCAST surface hail follows NOAA's operational HRRR v4 by default. WRF 4.6.1's stone model melted most stones before the ground (a stone in 8% of real updraft columns, against 99% for HRRR's), which drew thin, broken HAILCAST swaths.
+- Runs with terrain drag (`gwd_opt = 1` or `3`, every HRRR recipe) and a companion export no longer exit 1 with "proof export source hashes differ from preparation" after a finished forecast.
+- The start state's inland-water daily mean (WRF TAVGSFC) averages the leads the source has posted, not the ones our download has finished, so a case prepares the same lake temperatures from a cold or a warm cache.
+- `rw_compare --compare hrrr` hail sheets pair each WRF hail field with the HRRR message NCEP's post writes from it: `hail_max_surface` reads the 0.1 sigma message, and a new `hail_max_hailcast` sheet pairs HAILCAST with HRRR's surface hail.
+- Missing or corrupt physics tables name the file and the staging command; interrupted table downloads restart safely.
+- Native lateral smoke forcing reads the configured boundary smoke source at later forcing times instead of the initial-only source, and source acquisition honours each cycle's horizon.
+- Legacy RRTMG sizes its shortwave workspace inside an explicit CuPy memory limit, so it no longer fails at startup on a shared card.
+- With strict numerics, the 500 x 500 x 44 June 2021 CONUS case matches WRF 4.6.1's pinned gfortran 13.3 scalar build on 12 MPI ranks at +1 h and +2 h: 0 of 265,734,210 common history words differ. The fixes keep WRF's stored MF_VX_INV map inverse, the last RK stage's coupled cumulus moisture forcing, the physical boundary eta-flux seed, WRF's shortwave diagnostic rounding and the older scalar tangent (`docs/conus-strict461.md`). Strict MYJ history now writes TKE_PBL, EL_PBL, U10E and V10E.
+- The MYJ surface layer (`sf_sfclay_physics = 2`) takes the background roughness Noah writes each step, as WRF does, instead of a copy of the starting roughness, and Noah writes MYJ's low-moisture flag (CHKLOWQ) as WRF does under the MYJ surface layer.
+
 ## 2.9.10 (2026-10-29)
 
 New:

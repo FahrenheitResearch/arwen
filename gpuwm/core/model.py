@@ -522,6 +522,8 @@ def restart_identity_payload(exp) -> dict:
     # experiment and must refuse.
     if experiment.get("spectral_numerics") is None:
         experiment.pop("spectral_numerics", None)
+    if experiment.get("nudging") is None:
+        experiment.pop("nudging", None)
     # Same convention for [physics_params]: ABSENT stays absent, so every
     # pre-feature fingerprint and checkpoint is preserved.  A PRESENT set
     # binds value for value: resuming a checkpoint under other constants is
@@ -832,6 +834,16 @@ def restart_identity_payload(exp) -> dict:
         # ... and the MYNN generation, omitted at wrf_461 (every earlier
         # fingerprint), bound by name off it; its gsd_41 TKE option is
         # omitted at its default for the same reason.
+        if run.get("wind_farm_scheme", "off") == "off":
+            run.pop("wind_farm_scheme", None)
+            run.pop("wind_farm_table", None)
+            run.pop("wind_farm_max_dx_m", None)
+            run.pop("wind_farms", None)
+            run.pop("windfarm_tke_factor", None)
+        else:
+            from gpuwm.wind_table import read_table
+            _, run["wind_farm_table_sha256"] = read_table(
+                run["wind_farm_table"], run["wind_farm_scheme"])
         if run.get("bl_mynn_version", "wrf_461") == "wrf_461":
             run.pop("bl_mynn_version", None)
         # Headers before this selector ran the legacy YSU kernel.
@@ -1878,6 +1890,12 @@ def execute_experiment(
     if seam_experiment is None and context is not None:
         seam_experiment = context.get("experiment")
     spectral_seam = attach_seam(model, seam_experiment, steppers)
+    nudging = getattr(seam_experiment, "nudging", None)
+    if nudging is not None:
+        for node in model.walk_parent_first():
+            if (nudging.for_domain(node.cfg.grid_id) is not None
+                    and getattr(node.state, "_spectral_nudging_owner", None) is None):
+                raise ValueError("NUDGING_ANALYSES_UNBOUND: this domain has no prepared analysis forcing; use the prepared forecast route")
     feedback_scratch = {
         node.cfg.grid_id: FeedbackScratch()
         for node in model.walk_parent_first() if node.parent is not None}
@@ -2361,6 +2379,9 @@ def execute_experiment(
                 validators[grid_id].require_healthy(
                     phase=f"pre-history.d{grid_id:02d}")
             node = model.node(grid_id)
+            nudging_owner = getattr(node.state, '_spectral_nudging_owner', None)
+            if nudging_owner is not None:
+                nudging_owner.check_at_seam()
             from gpuwm.wrf_exact import ENABLED as wrf_exact
             if wrf_exact and node.parent is not None:
                 # WRF writes a nest's frame at an instant it shares with its

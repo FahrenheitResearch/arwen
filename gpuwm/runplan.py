@@ -5308,7 +5308,9 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
 
     cycle = parse_cycle(
         str(hints["cycle"]), "hrrr").strftime("%Y-%m-%d_%H:%M:%S")
-    cadence = int(exp.domains[0].history_interval_s)
+    # Preparation overrides the document's full-frame cadence, not the
+    # shorter alarm used to schedule its separate quick-look stream.
+    cadence = int(exp.root.full_history_interval_s or exp.root.history_interval_s)
     prepare = [
         sys.executable, "-m", "tools.prepare_hrrr_wrf",
         "--source-root", str(data_dir),
@@ -6699,16 +6701,28 @@ def _staged_chem_fetch(exp, observer) -> None:
         float(lat.max()) + margin, float(lon.max()) + margin))
     start = exp.start_time.isoformat()
     end = (exp.start_time + timedelta(seconds=float(exp.run_seconds))).isoformat()
-    command = [sys.executable, "-m", "gpuwm.data_store_fetch", "fetch"]
+    from gpuwm.chem_boundary_remap import boundary_rows
+    # Initial-only sources need one bracket. Fetching the full forecast
+    # otherwise decodes many gigabytes that no later frame consumes.
+    windows = {}
     for name in sources:
-        command.extend(("--source", name))
-    command.extend(("--area", area, "--start", start, "--end", end))
-    print(f"chem fetch: {', '.join(sources)} over {area}", flush=True)
-    completed = subprocess.run(command, capture_output=True, text=True)
-    if completed.returncode != 0:
-        raise PlanError(
-            f"the chem fetch for {', '.join(sources)} failed (exit "
-            f"{completed.returncode}): {completed.stderr.strip()[-2000:]}")
+        initial = boundary_rows(table, name, available=names, frame="initial")
+        lateral = boundary_rows(table, name, available=names, frame="boundary")
+        emission = any(ref["source"] == name
+                       for row in table.rows for ref in row.emissions)
+        source_end = start if initial and not lateral and not emission else end
+        windows.setdefault(source_end, []).append(name)
+    for source_end, group in windows.items():
+        command = [sys.executable, "-m", "gpuwm.data_store_fetch", "fetch"]
+        for name in group:
+            command.extend(("--source", name))
+        command.extend(("--area", area, "--start", start, "--end", source_end))
+        print(f"chem fetch: {', '.join(group)} over {area} through {source_end}", flush=True)
+        completed = subprocess.run(command, capture_output=True, text=True)
+        if completed.returncode != 0:
+            raise PlanError(
+                f"the chem fetch for {', '.join(group)} failed (exit "
+                f"{completed.returncode}): {completed.stderr.strip()[-2000:]}")
 
 
 def _staged_chain(plan: RunPlan, *, config_path: Path, exp,

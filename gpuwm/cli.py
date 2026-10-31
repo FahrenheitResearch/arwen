@@ -939,6 +939,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _dispatch_argv(argv: list[str] | None = None) -> int:
+    from gpuwm.table_assets import MissingTableAssets, TableAssetError
     tokens = _rewrite_version_alias(
         list(sys.argv[1:] if argv is None else argv))
     if tokens and tokens[0] == "suite":
@@ -1087,6 +1088,7 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
     # time below, so it cannot be deferred into the handler itself.
     from gpuwm.static.highres_refusal import HighresRefusal
     from gpuwm.ingest.memory_refusal import InitializationMemoryRefused
+    from gpuwm.forecast_gpu import ForecastGPURequired
 
     try:
         # WHICH TREE IS EXECUTING, said out loud before anything runs,
@@ -1169,6 +1171,9 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
               "here. Any partial output carries no completion receipt.",
               file=sys.stderr)
         return _INTERRUPT_EXIT_CODE
+    except ForecastGPURequired as error:
+        print(f"gpuwm {args.command}: {error}", file=sys.stderr)
+        return 2
     except capabilities.CapabilityMissing as error:
         # The front-door preflight, and every deeper door that raises the
         # same refusal.  The message already names the command, because
@@ -1198,6 +1203,9 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
         # fifteen frames -- measured at this door when the first public-tree
         # companion wheel shipped without its rrtmgp/*.nc.  The message
         # already names the member, the breakage, and the pip line.
+        print(f"gpuwm {args.command}: {error}", file=sys.stderr)
+        return 2
+    except (MissingTableAssets, TableAssetError) as error:
         print(f"gpuwm {args.command}: {error}", file=sys.stderr)
         return 2
     except MemoryAdmissionError as error:
@@ -1752,6 +1760,8 @@ def _dispatch_with_outputs(args) -> int:
             # so the refusal costs the reader nothing.
             from gpuwm.config import validate_experiment_preparation
 
+            from gpuwm.tables import _ensure_for_load as ensure
+            ensure(exp)
             validate_experiment_preparation(exp)
             if not args.no_supervise:
                 from gpuwm.supervisor import supervise_from_cli
@@ -1808,6 +1818,9 @@ def _dispatch_with_outputs(args) -> int:
         refuse_unrouted_devices(SimpleNamespace(devices=load_device_options(args.config)),
                                 "gpuwm run legacy case")
     cfg = load_config(args.config)
+    if args.command == "run":
+        from gpuwm.tables import _ensure_for_load as ensure
+        ensure(cfg)
     if not cfg.case:
         raise ValueError(
             f"config file {args.config} must set case in the [run] table")

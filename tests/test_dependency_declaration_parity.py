@@ -92,6 +92,7 @@ _FIRST_PARTY = frozenset({"gpuwm", "tools", "tilestream",
 #: the point is that adding an import forces a decision about who ships it.
 _PROVIDERS: dict[str, tuple[str, ...]] = {
     "h5py": ("h5py",),
+    "rustmatrix": ("rustmatrix",),
     "PIL": ("pillow",),
     "affine": ("affine",),
     "cupy": ("cupy-cuda12x", "cupy-cuda13x"),
@@ -237,6 +238,13 @@ _EARTH2_INTERPRETER = (
 )
 
 _OPTIONAL_BY_DESIGN: dict[str, str] = {
+    "rustmatrix": (
+        "tools/build_radar_scattering_tables.py (labs/radar-bands, 2.9.11) is the "
+        "maintainer build that regenerates the shipped C/X-band scattering tables "
+        "(bowecho_simradar data/scattering-*.bin) with the T-matrix package; no "
+        "forecast, preparation or radar door imports it, and the tables it writes "
+        "ship as data."
+    ),
     "hexcore": (
         "gpuwm/output_formats.py imports hexcore.forecast_door only for a store "
         "whose engine is gpuwm-hex (self.engine == 'gpuwm-hex'), i.e. on a "

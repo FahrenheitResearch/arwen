@@ -236,8 +236,8 @@ WRF source: https://github.com/wrf-model/WRF at v4.7.1 (f52c197ed39d).
 
 | value | WRF option | gpuwm |
 |---|---|---|
-| `1` | Fitch wind farm | refused: &physics windfarm_opt = [1]: The Fitch wind-farm drag scheme (fitchscheme) is not ported in this release. Nothing is substituted for it; set windfarm_opt = 0. |
-| `2` | Ma et al. (2022) wind farm with subgrid wakes | refused: &physics windfarm_opt = [2]: The MAV wind-farm drag scheme (mavscheme) is not ported in this release. Nothing is substituted for it; set windfarm_opt = 0. |
+| `1` | Fitch wind farm | refused: &physics windfarm_opt = [1]: Fitch requires MYNN bl_pbl_physics=5; other PBL schemes do not receive the turbine TKE source |
+| `2` | Ma et al. (2022) wind farm with subgrid wakes | refused: &physics windfarm_opt = [2]: only 0 (off) and 1 (Fitch) are implemented; MAV option 2 requires subgrid wakes that this coupling does not calculate |
 
 ## `cu_rad_feedback`
 

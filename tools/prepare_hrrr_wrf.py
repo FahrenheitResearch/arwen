@@ -1780,7 +1780,19 @@ def _configured_defaults(args):
     if args.run_seconds is None:
         args.run_seconds = configured.run_seconds
     if args.history_interval_seconds is None:
-        args.history_interval_seconds = configured.root.history_interval_s
+        args.history_interval_seconds = (configured.root.full_history_interval_s
+                                         or configured.root.history_interval_s)
+
+
+def _validate_prepared_history_cadence(preparation_report, configured):
+    # The benchmark reports the parsed writer alarm. With a quick look,
+    # that alarm is shorter than the full-frame interval passed as an
+    # override to the experiment document.
+    observed = preparation_report.get("history_interval_seconds")
+    if (isinstance(observed, bool) or not isinstance(observed, (int, float))
+            or float(observed) != float(configured.root.history_interval_s)):
+        raise RuntimeError(
+            "HRRR prepared-cache history cadence differs from the request")
 
 
 #: What this wrapper hands a chained native preparation
@@ -1798,6 +1810,16 @@ def _chains(args) -> bool:
     """
 
     from gpuwm.ingest.boundary_stream import chained_enabled, forecast_installed
+
+    config=getattr(args,'experiment_config',None)
+    if config is not None:
+        from gpuwm.experiment import load_experiment
+        if load_experiment(config).nudging is not None:
+            return False  # full-domain analysis series are published with the sealed bundle
+    elif getattr(args,'namelist_input',None) is not None:
+        from gpuwm.namelist_import import parse_namelist,active_nudging_selectors
+        if active_nudging_selectors(parse_namelist(args.namelist_input).get('fdda',{})):
+            return False
 
     return (not args.sealed_prepared_cache
             and getattr(args, "physical_input_store", None) is None
@@ -2272,14 +2294,7 @@ def _run_configured(args):
         if _sha256(snapshot) != args.source_manifest_sha256.lower():
             raise ValueError(
                 "source manifest changed during sealed preparation")
-    observed_history_interval = preparation_report.get(
-        "history_interval_seconds")
-    if (isinstance(observed_history_interval, bool)
-            or not isinstance(observed_history_interval, (int, float))
-            or float(observed_history_interval)
-            != float(args.history_interval_seconds)):
-        raise RuntimeError(
-            "HRRR prepared-cache history cadence differs from the request")
+    _validate_prepared_history_cadence(preparation_report, configured)
     (preprocess_receipt, preprocess_worker_budget,
      pipeline_worker_receipt) = _validated_worker_receipts(
          preparation_report,

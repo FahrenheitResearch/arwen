@@ -71,7 +71,10 @@ def test_the_six_doors_are_bundled_on_demand_and_not_in_the_wheel():
         # 2.9.9 (PyPI per-file limit): the fixed-ladder probability renderer.
         | {"rw_probgrid"}
         # 2.9.10 (PyPI per-file limit): the opt-in Icechunk writer and the gpuwm-hex RRFS init binaries.
-        | {"rw_icechunk", "rw_mpas_init_v831", "rw_mpas_gsl_oro"})
+        | {"rw_icechunk", "rw_mpas_init_v831", "rw_mpas_gsl_oro"}
+        # 2.9.11 (PyPI per-file limit): opt-in simulated radar, ML export, the wind-farm
+        # table decoder and the opt-in hydro door's payload library.
+        | {"rw_simradar", "rw_mlexport", "rw-wind-table", "nextgen_hydrofabric"})
 
 
 def test_every_stream_with_a_door_names_a_bundled_artifact():

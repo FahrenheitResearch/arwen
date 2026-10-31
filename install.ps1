@@ -217,7 +217,7 @@ $rustWorkspaces = @('grib1_bridge', 'rustwx', 'arwen-tui', 'zarr_bridge',
                     'rw_wps', 'region_global_dealias',
                     'nextgen_hydrofabric', 'nextgen_forcing', 'nextgen_verify',
                     'hydro_world', 'hydro_world_params', 'nextgen_reservoir_prepare', 'hydro_world_init',
-                    'ocean_prepare', 'rw-bathy', 'nextgen_output', 'rw_icechunk')
+                    'ocean_prepare', 'rw-bathy', 'wind-table', 'nextgen_output', 'rw_icechunk')
 function ConvertTo-RustVersion([string]$Text) {
     # '1.94', '1.94.0' or rustc's '1.95.0-nightly' as a comparable [version].
     if ($Text -match '^(\d+)\.(\d+)(?:\.(\d+))?') {
@@ -754,7 +754,7 @@ try {
 } finally {
     Pop-Location
 }
-foreach ($workspace in 'nextgen_hydrofabric', 'nextgen_forcing', 'nextgen_verify', 'hydro_world', 'hydro_world_params', 'nextgen_reservoir_prepare', 'hydro_world_init', 'ocean_prepare', 'rw-bathy', 'nextgen_output') {
+foreach ($workspace in 'nextgen_hydrofabric', 'nextgen_forcing', 'nextgen_verify', 'hydro_world', 'hydro_world_params', 'nextgen_reservoir_prepare', 'hydro_world_init', 'ocean_prepare', 'rw-bathy', 'wind-table', 'nextgen_output') {
     Say "building NextGen tools\$workspace (offline, locked)"
     Push-Location "tools\$workspace"
     try {

@@ -70,6 +70,14 @@ _TOP_LEVEL_EXCLUDES = {
     # every standalone-package test with it.  A preprocessing wheel lays out
     # no domain.
     "region_recipe.py",
+    # The versioned Python domain API (fix/ds-api, 2.9.11): it builds a
+    # DomainState and steps the dycore (gpuwm.core.dycore), the forecast
+    # executor this wheel never carries; nothing staged imports it, and
+    # staging it failed this builder's unresolved-import scan.
+    "domain.py",
+    # `gpuwm go --smoke-radiation` (labs/smoke-optics, 2.9.11): a go-door
+    # restatement that imports gpuwm.go_cli; its one importer is go_cli.
+    "smoke_radiation.py",
     # The warm-standby and race doors (2.9.4, `gpuwm standby` / `gpuwm
     # race`): a standby process holds a prepared forecast warm and starts
     # it the moment a source cycle posts; race drives standby (or `gpuwm

@@ -76,7 +76,7 @@ _SASE_FLUX_DIAG_OUTPUT = {"SASE_FQV_VENT": "fqv_vent",
 
 _Z_STAGGERED_MASS_FIELDS = frozenset(
     SCHEME_OUTPUT_FIELDS[key].netcdf_name
-    for key in ("el_pbl", "exch_h", "exch_m")) | SFIRE_VOLUME_FIELDS
+    for key in ("el_pbl", "tke_pbl", "exch_h", "exch_m")) | SFIRE_VOLUME_FIELDS
 
 # Metadata follows the same table-driven inventory as live chemistry output.
 CHEM_VAR_META: dict[str, tuple[str, str]] = {}
@@ -244,6 +244,19 @@ def live_state_history_fields(state) -> dict[str, object]:
     # PhysicsDriver refuses to build when a selector value is unrouted.
     dispatch = getattr(physics, "scheme_dispatch", None)
     live_surface = getattr(physics, "fields", {})
+    from gpuwm.wrf_exact import ENABLED as strict_history
+    if strict_history and dispatch is not None:
+        from gpuwm.core.physics_inventory import PHYSICS_SLOT_DISPATCH
+        if dispatch.get("bl_pbl_physics") == PHYSICS_SLOT_DISPATCH["bl_pbl_physics"][2]:
+            # MYJ carries mass levels. The writer pads WRF's unused top
+            # interface with its Registry cold zero, as it does for EL_PBL.
+            for runtime, output in (("tke_myj", "tke_pbl"), ("el_myj", "el_pbl")):
+                if runtime in live_surface:
+                    fields[SCHEME_OUTPUT_FIELDS[output].netcdf_name] = live_surface[runtime]
+        if dispatch.get("sf_sfclay_physics") == PHYSICS_SLOT_DISPATCH["sf_sfclay_physics"][2]:
+            for runtime in ("u10e", "v10e"):
+                if runtime in live_surface:
+                    fields[SCHEME_OUTPUT_FIELDS[runtime].netcdf_name] = live_surface[runtime]
     from gpuwm.ocean.seaice import history as seaice_history
     fields.update(seaice_history(live_surface))
     from gpuwm.core.physics_inventory import CUMULUS_HISTORY_LAYOUT
@@ -449,6 +462,9 @@ def physics_history_fields(physics) -> dict[str, object]:
     ocean = getattr(physics, "ocean", None)
     if ocean is not None:
         output.update(ocean.history_fields())
+    wind_farm = getattr(physics, "wind_farm", None)
+    if wind_farm is not None:
+        output.update(wind_farm.history_fields())
     urban = getattr(physics, "urban", None)
     if urban is not None and urban.option == 1:
         output.update({name: urban.fields[field]

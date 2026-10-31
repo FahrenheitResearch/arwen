@@ -106,6 +106,26 @@ def test_unrecorded_dynamic_requests_share_the_process_compiler(monkeypatch, pla
     assert kernel_plan._state["counts"]["dynamic_pool_compiles"] == 1
 
 
+def test_startup_keeps_the_process_compiler_for_first_step_discoveries(monkeypatch, plan_dir):
+    from gpuwm import kernel_prewarm, local_gpu
+    compiler = _StubCompiler()
+    _fresh(monkeypatch, compiler)
+    assert kernel_plan.install(plan_dir=plan_dir, tag_text='first-step')
+    record = {}
+    kernel_plan._state.update(compiler_pool=SimpleNamespace(shutdown=lambda **kw: None), replay=record)
+    monkeypatch.setattr(local_gpu, 'no_local_gpu', lambda: False)
+    monkeypatch.setattr(kernel_prewarm, 'plan_tag', lambda experiment: 'first-step')
+    monkeypatch.setattr(kernel_prewarm, 'submit_static', lambda *args, **kwargs: 0)
+    monkeypatch.setattr(kernel_plan, 'start', lambda: record)
+    monkeypatch.setattr(kernel_plan, '_submit_and_wait', lambda *args: (b'worker-image', None))
+    try:
+        assert kernel_prewarm.start_plan(SimpleNamespace(domains=())) is record
+        assert compiler._compile_using_nvrtc_no_warning('first-step generated reduction') == (b'worker-image', None)
+        assert not compiler.calls
+    finally:
+        kernel_plan.close(wait=True)
+
+
 def test_concurrent_cold_install_does_not_wrap_its_own_funnel(monkeypatch, plan_dir):
     """Two members used to nest funnels and wait forever inside cuda_cache.
 

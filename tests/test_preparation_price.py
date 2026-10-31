@@ -68,15 +68,17 @@ def _measured_domains(row):
 # ---------------------------------------------------------------- the price
 
 def test_state_term_is_the_exact_constructor_inventory():
-    """83 arrays, 21,163,805,580 bytes at the 3 km CONUS shape (the byte
-    total both surveys reached: a traced constructor and the inventory)."""
+    """84 arrays, 21,171,152,780 bytes at the 3 km CONUS shape (the byte
+    total both surveys reached: a traced constructor and the inventory; 2.9.11
+    added the stored MF_VX_INV plane msfv_inv, 4 x 1025 x 1792 = 7,347,200 B,
+    paper/conus-suite-exact; 83 and 21,163,805,580 before)."""
     reference = RunConfig(nx=1792, ny=1024, nz=55, dx=3000.0, dy=3000.0,
                           ztop=20000.0, dt=15.0, run_seconds=3600.0,
                           terrain_opt=1, moist=True, mp_physics=8,
                           specified=True)
     from gpuwm.core.preflight import state_array_shapes
-    assert len(state_array_shapes(reference)) == 83
-    assert pp.state_bytes(reference) == 21_163_805_580
+    assert len(state_array_shapes(reference)) == 84
+    assert pp.state_bytes(reference) == 21_171_152_780
 
 
 @pytest.mark.parametrize("row", pp.MEASURED_PREPARATION_PEAKS,

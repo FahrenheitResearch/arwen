@@ -2603,16 +2603,18 @@ def materialize_named_source_authorities(
 
 
 def _resolved_wrf_direct_contract_sha256(mp_physics: int) -> str:
-    """Reproduce the exact resolved contract digest emitted by the exporter."""
+    """Reproduce the exact resolved contract digest emitted by the exporter.
 
-    from gpuwm.wrf_direct import (
-        _contract_payload_sha256,
-        _load_contract,
-        _physics_contract_bundle,
-    )
+    The exporters write the digest with the same function
+    (:func:`gpuwm.wrf_direct.resolved_physics_contract_sha256`), so the two
+    cannot drift apart again: a copy of the computation here once stayed
+    on mp_physics while the exporter's took in the run's terrain-drag
+    statistics, and every gwd_opt != 0 forecast ended rc=1 here.
+    """
 
-    return _contract_payload_sha256(
-        _physics_contract_bundle(_load_contract(), int(mp_physics)))
+    from gpuwm.wrf_direct import resolved_physics_contract_sha256
+
+    return resolved_physics_contract_sha256(mp_physics)
 
 
 def _chem_ledger_receipt(state, *, store=None):
@@ -4520,7 +4522,7 @@ def _validate_front_door_physics_proof(
     # admitted on weaker evidence than the one beside it.
     export = proof.get("export")
     mapped_config_suite = (
-        source in _MAPPED_SOURCES
+        (source in _MAPPED_SOURCES or source == "era5")
         and isinstance(export, dict)
         and export.get("status") == "READY"
         and export.get("schema") == "gpuwm-native-direct-wrf-export-v3")
@@ -5976,7 +5978,9 @@ def _validate_source_identity(
     expected_decoder = {
         "name": manifest_files["bridge"]["name"],
         "sha256": manifest_files["bridge"]["sha256"],
-        "implementation": _DECODER_IMPLEMENTATION[source],
+        "implementation": ("gpuwm-all-rust-netcdf-bridge"
+            if source == "era5" and Path(manifest_files["grib"]["name"]).suffix.lower() == ".nc"
+            else _DECODER_IMPLEMENTATION[source]),
     }
     if decoder != expected_decoder or proof.get("decoder_sha256") \
             != expected_decoder["sha256"]:
@@ -7583,7 +7587,7 @@ def preflight_prepared_forecast(
             # citation edit (A153).  A mapped proof's recorded receipt is
             # the export's own.
             recorded_physics = (export.get("physics")
-                                if source in _MAPPED_SOURCES
+                                if source in _MAPPED_SOURCES or source == "era5"
                                 else proof.get("physics"))
             if expected_export_schema.endswith("-v3") \
                     and export.get("physics") != recorded_physics:
@@ -10451,6 +10455,11 @@ def run_prepared_forecast(
         # lands on the accumulator the tiles are actually folding into.
         node.state._streamed_domain = steppers[int(node.cfg.grid_id)]
 
+    if exp.nudging is not None:
+        if bundle is not None:
+            raise ValueError("NUDGING_FULL_HORIZONTAL_FFT: nudging needs a resident domain; tile-local FFTs change the requested wavelengths")
+        from gpuwm.spectral_nudging.prepared import allocate_held_tendencies, selected
+        allocate_held_tendencies(node.state, cfg, selected(exp))
     with _checkpoint_restore_resources(writers, step_log):
         restart_info = _restore_single_checkpoint(model, restart)
         from gpuwm.runtime import _restart_is_complete
@@ -10477,6 +10486,15 @@ def run_prepared_forecast(
             model, node, exp, prepared_root=inputs.prepared_root,
             steppers=steppers, restored_seconds=restored_seconds,
             checked=radar_heating_checked)
+
+    nudging_hook = None
+    if not already_complete and exp.nudging is not None:
+        from gpuwm.spectral_nudging.prepared import PreparedNudging, selected
+        if selected(exp) is not None:
+            started = time.perf_counter()
+            nudging_hook = PreparedNudging(node.state, cfg, exp,
+                inputs.prepared_root, inputs.cache_identity['source_manifest_sha256'])
+            timing['nudging_setup'] = time.perf_counter() - started
 
     checkpoints = []
     checkpoint_ticks = {}
@@ -10647,6 +10665,8 @@ def run_prepared_forecast(
         model._io_manager = None
         if radar_heating_hook is not None:
             radar_heating_hook.detach()
+        if nudging_hook is not None:
+            nudging_hook.detach()
     # After the drain: every frame this run will ever commit is durable
     # and has its marker, so the run_end record is true when it is read.
     step_log.close(status="SUCCESS")
@@ -11127,6 +11147,8 @@ def run_prepared_forecast(
     if radar_heating_hook is not None:
         report["radar_heating"] = radar_heating_hook.receipt()
         radar_heating_hook.require_applied()
+    if nudging_hook is not None:
+        report['nudging'] = nudging_hook.receipt()
     if getattr(getattr(exp, "devices", None), "enabled", False):
         report["devices"] = (
             early_devices_receipt if early_devices_receipt is not None
@@ -11223,6 +11245,11 @@ def run_prepared_forecast(
             **prestaged_boundaries.receipt,
             "boundary_read_seconds": dict(boundary_source.intervals.read_seconds),
         }
+    if getattr(driver, "wind_farm_detection", None) is not None:
+        report["wind_farm_detection"] = driver.wind_farm_detection
+    if getattr(driver, "wind_farm", None) is not None:
+        report["wind_farm"] = driver.wind_farm.receipt()
+        report["wind_farm"]["module_replay"] = driver.wind_farm.write_replay(outdir / "wind-replay.nc")
     # Default-on hydro: per-step cost with parallelism named (5 percent budget)
     # and the products, both at the output boundary, after device sync.
     from gpuwm.hydro.cost import receipt as _hydro_cost_receipt
@@ -11869,7 +11896,8 @@ def _route_owned_first_products(args, *, outdir: Path, observer,
                           warn=warn)
 
 
-def main(argv=None, *, observer=None, prestaged_boundaries=None) -> int:
+def main(argv=None, *, observer=None, prestaged_boundaries=None,
+         runtime_run_overrides=None) -> int:
     """The runner's command line.
 
     ``observer`` is forwarded to :func:`run_prepared_forecast` and is
@@ -11878,6 +11906,9 @@ def main(argv=None, *, observer=None, prestaged_boundaries=None) -> int:
     progress this function publishes to ``progress.json``, plus each
     wrfout as it lands.  ``None`` -- every command-line invocation --
     changes nothing.
+
+    ``runtime_run_overrides`` uses the preflight API's validated inert-field
+    contract. Original preparation authorities remain byte-bound.
     """
 
     if argv is None:
@@ -12099,6 +12130,8 @@ def main(argv=None, *, observer=None, prestaged_boundaries=None) -> int:
             history_interval_seconds=args.history_interval_seconds,
             domain_bundle=args.domain_bundle,
             tiles=tiles, devices=args.devices, devices_options=devices_options,
+            **({} if runtime_run_overrides is None else
+               {"runtime_run_overrides": runtime_run_overrides}),
             **({} if simulated_radar is None else {"simulated_radar": simulated_radar}),
             **({} if radar_heating is None else {"radar_heating": radar_heating}))
         preflight_seconds = time.perf_counter() - preflight_started

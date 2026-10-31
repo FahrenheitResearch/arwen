@@ -585,9 +585,16 @@ def test_the_on_demand_set_is_read_from_the_tagged_declaration(publication):
                                                     # 2.9.10 (PyPI per-file limit): the Icechunk writer and
                                                     # the gpuwm-hex RRFS init binaries.
                                                     "rw_icechunk", "rw_mpas_init_v831",
-                                                    "rw_mpas_gsl_oro"} == {
+                                                    "rw_mpas_gsl_oro",
+                                                    # 2.9.11 (PyPI per-file limit): opt-in simulated
+                                                    # radar, ML export, the wind-farm table decoder
+                                                    # and the hydro door's payload library.
+                                                    "rw_simradar", "rw_mlexport", "rw-wind-table",
+                                                    "nextgen_hydrofabric"} == {
         a.name for a in bridge_assets.on_demand_artifacts()}
-    assert {"rw_simradar", "rw_mlexport", "rw_globe_pack"} <= {a.name for a in bridge_assets.wheel_artifacts()}
+    # The global worker's packer stays in the wheel: a global run without it
+    # builds its statics natively (about 2,000 s at T255).
+    assert {"rw_globe_pack"} <= {a.name for a in bridge_assets.wheel_artifacts()}
 
 
 @pytest.mark.parametrize("mutation", ["missing-native", "changed-native", "extra-native", "missing-manifest", "wrong-platform", "wrong-artifact", "wrong-kind", "changed-manifest-hash", "duplicate-manifest-row"])

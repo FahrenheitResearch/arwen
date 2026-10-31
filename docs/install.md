@@ -1,5 +1,36 @@
 # Install and verify RW-WPS
 
+## Without an NVIDIA GPU
+
+The base `pip install gpuwm` works without CuPy. Fetching, CPU preparation
+(`gpuwm prep --preprocess-backend cpu`), doctor, rendering existing output,
+and extracting soundings do not require an NVIDIA GPU. NumPy setup states
+support preparation and export; there is no CPU forecast step.
+
+Forecast allocation and `gpuwm.core.dycore.step` require an NVIDIA GPU and
+a driver supporting CUDA 12.x with `pip install 'gpuwm[gpu-cu12]'` (CuPy
+>=14.0 and its CUDA toolkit). Use `gpuwm[gpu-cu13]` on a CUDA-13-only
+system. VRAM depends on the domain and physics; `gpuwm check` sizes the
+configuration. `gpuwm doctor` reports the detected runtime and matching
+extra, and explains this requirement when a device is unavailable.
+
+Direct integrations can display the same named error:
+
+```python
+from gpuwm.forecast_gpu import ForecastGPURequired, require_forecast_gpu
+
+try:
+    require_forecast_gpu()  # before constructing a forecast domain
+except ForecastGPURequired as error:
+    print(error)  # present this message in the application's interface
+```
+
+`DomainState` forecast allocation and `dycore.step` also check this
+requirement. Catch `ForecastGPURequired` around either call to handle an
+unavailable device. CLI forecast commands print the message and exit 2.
+The [CPU walkthrough](public/WITHOUT-A-GPU.md) covers preparing inputs for
+a forecast run on another machine.
+
 RW-WPS does not yet publish a community package. There are two useful
 installation modes: a developer checkout for inspection/tests and a sealed
 Linux or Windows x86-64 runtime archive for real preprocessing. Neither mode
@@ -36,7 +67,7 @@ offline command, build the hydro payload (`tools/nextgen_hydrofabric`),
 forcing (`tools/nextgen_forcing`), gauge verification (`tools/nextgen_verify`) and
 hydro fabric preparation (`tools/hydro_world`, `tools/hydro_world_params`,
 `tools/nextgen_reservoir_prepare`, `tools/hydro_world_init`) and ocean
-preparation (`tools/ocean_prepare`, `tools/rw-bathy`) and hydro output (`tools/nextgen_output`), and the Icechunk store writer (`tools/rw_icechunk`)
+preparation (`tools/ocean_prepare`, `tools/rw-bathy`), the wind-turbine table decoder (`tools/wind-table`) and hydro output (`tools/nextgen_output`), and the Icechunk store writer (`tools/rw_icechunk`)
 workspaces (fetching their locked dependencies first), and finish with `gpuwm doctor`, whose exit status the script propagates.
 
 A pip install on Windows x86-64 or Linux x86-64 needs no toolchain for
@@ -105,7 +136,7 @@ python -m pip install --upgrade pip
 python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
-for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify tools/hydro_world tools/hydro_world_params tools/nextgen_reservoir_prepare tools/hydro_world_init tools/ocean_prepare tools/rw-bathy tools/nextgen_output tools/rw_icechunk; do
+for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify tools/hydro_world tools/hydro_world_params tools/nextgen_reservoir_prepare tools/hydro_world_init tools/ocean_prepare tools/rw-bathy tools/wind-table tools/nextgen_output tools/rw_icechunk; do
   (cd "$workspace" && cargo fetch --locked && cargo build --release --locked --offline)
 done
 gpuwm doctor
@@ -121,7 +152,7 @@ python -m pip install --upgrade pip
 python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
-foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify', 'tools\hydro_world', 'tools\hydro_world_params', 'tools\nextgen_reservoir_prepare', 'tools\hydro_world_init', 'tools\ocean_prepare', 'tools\rw-bathy', 'tools\nextgen_output', 'tools\rw_icechunk') {
+foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify', 'tools\hydro_world', 'tools\hydro_world_params', 'tools\nextgen_reservoir_prepare', 'tools\hydro_world_init', 'tools\ocean_prepare', 'tools\rw-bathy', 'tools\wind-table', 'tools\nextgen_output', 'tools\rw_icechunk') {
   Push-Location $workspace; cargo fetch --locked; cargo build --release --locked --offline; Pop-Location
 }
 gpuwm doctor
@@ -162,13 +193,14 @@ bundle carries, and the gate below judges each one it finds built:
 | `tools/hydro_world_init` | `rw_hydro_init`, hydro initial water state |
 | `tools/ocean_prepare` | `rw_ocean`, ocean bathymetry and atmospheric forcing preparation |
 | `tools/rw-bathy` | `rw_bathy`, storm-surge bathymetry ingest and products |
+| `tools/wind-table` | `rw-wind-table`, wind-turbine inventories and WRF Fitch tables (`--wind-farms`) |
 | `tools/nextgen_output` | `rw_nextgen_output`, coupled hydro history, restart and products |
 | `tools/rw_icechunk` | `rw_icechunk`, the optional Icechunk output store writer |
 
 By hand, POSIX:
 
 ```bash
-for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify tools/hydro_world tools/hydro_world_params tools/nextgen_reservoir_prepare tools/hydro_world_init tools/ocean_prepare tools/rw-bathy tools/nextgen_output tools/rw_icechunk; do
+for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify tools/hydro_world tools/hydro_world_params tools/nextgen_reservoir_prepare tools/hydro_world_init tools/ocean_prepare tools/rw-bathy tools/wind-table tools/nextgen_output tools/rw_icechunk; do
   (cd "$workspace" && cargo fetch --locked && cargo build --release --locked --offline)
 done
 ```
@@ -176,7 +208,7 @@ done
 Windows (PowerShell):
 
 ```powershell
-foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify', 'tools\hydro_world', 'tools\hydro_world_params', 'tools\nextgen_reservoir_prepare', 'tools\hydro_world_init', 'tools\ocean_prepare', 'tools\rw-bathy', 'tools\nextgen_output', 'tools\rw_icechunk') {
+foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify', 'tools\hydro_world', 'tools\hydro_world_params', 'tools\nextgen_reservoir_prepare', 'tools\hydro_world_init', 'tools\ocean_prepare', 'tools\rw-bathy', 'tools\wind-table', 'tools\nextgen_output', 'tools\rw_icechunk') {
   Push-Location $workspace; cargo fetch --locked; cargo build --release --locked --offline; Pop-Location
 }
 ```
@@ -364,6 +396,44 @@ into site-packages before 1.4 -- keeps reading that one and stages
 nothing.
 `gpuwm doctor` reports exactly which pieces are missing and prints the
 command that fixes each one.
+
+Downstream programs can check tables without starting CUDA or downloading:
+
+```python
+from gpuwm import tables
+
+report = tables.status({"mp_physics": 50, "sf_surface_physics": 2})
+print(report.needed, report.present, report.missing, report.corrupt)
+tables.ensure({"mp_physics": 50}, fetch=False)  # raise a named table error
+tables.ensure({"mp_physics": 8})  # retain verified Thompson first-use staging
+```
+
+These public checks inspect the current bytes on every call. Physics loaders
+reuse verification within a process while the resolved path, size, nanosecond
+modification/change times, inode and device remain unchanged; replacing a table
+invalidates that cache. Admission and checkpoint identities share those digests.
+
+Both helpers accept a `RunConfig`, an experiment, a mapping of physics
+selectors, or family names such as `["p3", "noah", "tempo", "rrtmgp"]`.
+An experiment also includes the tables its real-data land-use initialization reads.
+`present` means the size and SHA-256 match; `ready` means every required file
+is present. Corrupt data raises `tables.CorruptTableAssets`; missing data
+raises `tables.MissingTableAssets`. No scheme is substituted. TEMPO retains
+its verified automatic acquisition and announces each staged file.
+Acquisition failures raise `tables.TableAssetError` with the attempted source
+and the offline staging command.
+
+`gpuwm fetch-tables --schemes p3 noah --from DIR` stages just those families.
+The directory can mirror the package's data layout, contain family
+subdirectories, or hold the files directly. Add `--replace-damaged` to repair
+a corrupt destination: the replacement must pass its pin before the atomic
+install, and a bad source leaves the destination untouched. `GPUWM_TABLE_ROOT`
+selects an isolated packaged-table root with the package's relative data
+layout; existing Thompson, TEMPO and P3 root overrides remain supported.
+For a pinned uncompressed mirror, `GPUWM_TABLE_ASSET_URL_BASE` plus each
+packaged table's relative data path supplies its URL. Failed or interrupted
+downloads never publish a partial table; rerunning safely starts a new
+transfer. Offline failures name the attempted URL and the `--from DIR` route.
 
 High-resolution static geography needs no extra. Its engine is the Rust
 `static-fields` library, which ships in the bridge bundle every install

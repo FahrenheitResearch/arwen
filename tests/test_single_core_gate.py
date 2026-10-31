@@ -135,7 +135,12 @@ def test_cli_watch_fails_a_serial_command_and_allowlist_names_it(tmp_path):
     out = tmp_path / "p.json"
     gate = [sys.executable, par.__file__, "watch", "--interval", "0.25", "--min-wall", "1",
             "--out", str(out), "--", *_spin(2.5)]
-    done = subprocess.run(gate, capture_output=True, text=True, timeout=60)
+    # The same three readings for the red run (2.9.11 pass 6: the spin got 0.46 of a core beside 20 test parts,
+    # and the calibration a moment later got a whole one).
+    for _attempt in range(3):
+        done = subprocess.run(gate, capture_output=True, text=True, timeout=60)
+        if done.returncode == 3:
+            break
     if done.returncode != 3:
         _skip_if_host_cannot_give_one_core("CLI watch did not flag the serial spin")
     assert done.returncode == 3, done.stdout + done.stderr

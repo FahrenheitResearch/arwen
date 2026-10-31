@@ -200,6 +200,13 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
     assert "radiation/aerodm" in pf.physics_array_shapes(aer1_cfg)
     assert "radiation/aerodm" not in pf.physics_array_shapes(d01_cfg)
     names.add("aerodm")
+    # Analysis nudging (labs/nudging, 2.9.11) attaches its held FDDA
+    # tendencies at setup (gpuwm.spectral_nudging.prepared
+    # .allocate_held_tendencies), outside DomainState's allocation list, and
+    # serializes them so a resume keeps them: they join the union by name.
+    names |= {"nudging_tendency_u", "nudging_tendency_v",
+              "nudging_tendency_temperature", "nudging_tendency_geopotential",
+              "nudging_tendency_qv"}
     # Added packages join the allocation census; old configurations remain.
     for mp in (5,):
         names |= set(pf.state_array_shapes(dataclasses.replace(d01_cfg, mp_physics=mp)))
@@ -3722,7 +3729,9 @@ def test_estimate_domain_itemization_pins(exp1):
     # 04e65faa5ff (cap-solar): the default radiation split history carries
     # SWDDIR, SWDDNI and SWDDIF, three 4*200*250 FP32 physics planes,
     # 600,000 B on top of the previous 274,428,360-B physics pin.
-    assert by_cat == {'state': 573358148,
+    # paper/conus-suite-exact (2.9.11): the stored MF_VX_INV state plane msfv_inv,
+    # 4*(ny+1)*nx = 201,000 B on this 250x200 grid.
+    assert by_cat == {'state': 573559148,
  'physics': 275028360,
  'scratch': 597187064,
  'lbc': 67091504,
@@ -3730,7 +3739,7 @@ def test_estimate_domain_itemization_pins(exp1):
  'transient': 469137500}
     assert d01.resident_bytes == sum(
         v for c, v in by_cat.items() if c != "transient")
-    assert d01.resident_bytes == 1512665076
+    assert d01.resident_bytes == 1512866076
     assert est.resident_bytes == d01.resident_bytes + est.k_tables_bytes
     assert d01.transient_bytes == 469137500
 
@@ -3904,7 +3913,9 @@ def test_d01_calibration_bounds_measured_fixture(exp1):
     # This comparison does not turn that old run into a new measurement.
     # The six 0-d SCM forcing scalars (24 B) are strict-only too (scm_forcing_fields).
     # The cap-solar SWDDIR/SWDDNI/SWDDIF history planes add 600,000 B.
-    assert est.domains[0].resident_bytes == 1512665076
+    # paper/conus-suite-exact (2.9.11): the stored MF_VX_INV state plane msfv_inv,
+    # 4*(ny+1)*nx = 201,000 B on this 250x200 grid.
+    assert est.domains[0].resident_bytes == 1512866076
     # Compare the recorded pre-intake residency to its historical measurement.
     # New history carriers are separately priced above; this is no new pool measurement.
     ratio = 1523343280 / measured
@@ -4618,7 +4629,9 @@ def test_check_cli_legacy_config_wraps(capsys):
     # schedule: 8,899,840 B of boundary tables leave the d01 resident pin.
     # 04e65faa5ff (cap-solar): the SWDDIR/SWDDNI/SWDDIF split history
     # planes add 600,000 B.
-    assert payload["domains"]["d01"]["resident_bytes"] == 1503765236
+    # paper/conus-suite-exact (2.9.11): the stored MF_VX_INV state plane msfv_inv,
+    # 4*(ny+1)*nx = 201,000 B on this 250x200 grid.
+    assert payload["domains"]["d01"]["resident_bytes"] == 1503966236
 
 
 def test_check_cli_fails_closed_when_nothing_is_evaluable(capsys,

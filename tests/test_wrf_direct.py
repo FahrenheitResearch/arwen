@@ -645,6 +645,47 @@ def test_the_export_writes_the_land_categories_its_static_has(
         _resolved_wrf_direct_contract_sha256(8)
 
 
+@pytest.mark.parametrize("gwd_opt", [1, 3])
+def test_a_terrain_drag_export_records_the_digest_the_preflight_recomputes(
+        tmp_path, gwd_opt):
+    """A gwd_opt run's export names the digest its forecast checks.
+
+    The export writes the statistics the drag scheme reads (gwd_opt = 3:
+    the twenty GSL large- and small-scale fields), and it once also took
+    the digest of that drag-extended contract.  The forecast's preflight
+    recomputes the digest from mp_physics alone, so every gwd_opt != 0
+    run -- the hrrr_v4_gsd41 recipe on hrrr-native among them -- finished
+    its forecast and then exited rc=1 at the seal's preflight with
+    "proof export source hashes differ from preparation" (2.9.10).  The
+    files keep the statistics; the digest is the package's.
+    """
+    from gpuwm.prepared_single_domain_forecast import (
+        _resolved_wrf_direct_contract_sha256)
+    from gpuwm.static.orographic import required_static_fields
+
+    names = required_static_fields(0, gwd_opt)
+    written = {}
+
+    def drag_statistics(_surface, static):
+        ny, nx = static["HGT_M"].shape
+        for index, name in enumerate(names):
+            value = np.full((ny, nx), 1.0 + 0.25 * index, dtype=np.float32)
+            static[name] = value
+            written[name] = value
+
+    output, cfg, _seeded = _export_a_real_prepared_cache(
+        tmp_path, 28, surface_override=drag_statistics, gwd_opt=gwd_opt)
+    assert int(cfg.gwd_opt) == gwd_opt
+    with netCDF4.Dataset(output / "wrfinput_d01") as dataset:
+        for name in names:
+            np.testing.assert_array_equal(
+                np.asarray(dataset.variables[name][0], dtype=np.float32),
+                written[name])
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["source"]["resolved_physics_contract_sha256"] == \
+        _resolved_wrf_direct_contract_sha256(28)
+
+
 def test_a_profile_free_export_refuses_a_cache_that_records_no_physics():
     """Filling a missing selector from the frozen file is what was wrong."""
 

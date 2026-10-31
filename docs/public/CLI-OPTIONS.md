@@ -761,6 +761,7 @@ Takes no options of its own.
 | `--no-probe` | with --readiness: compute the schedule from the source table only and ask no host |
 | `--no-surface-fill` | disable fill soil/SST perturbations |
 | `--no-verify-visuals` | skip postforecast observation verification; the physical run is unchanged |
+| `--nudging {off,spectral,grid}` | relax toward prepared source analyses; spectral keeps only the configured large-scale modes |
 | `--outdir DIR` | output root for one timestamped run folder per launch, with forecast files, pictures and diagnostics (default <config-stem>-go beside the config); an existing run-... folder is used directly |
 | `--output-config TOML` | Read [output] formats and icechunk_store from TOML; CLI values override it |
 | `--output-format FORMATS` | Output-format table rows, comma separated (default netcdf); netcdf,icechunk adds atomic native Zarr v3 history |
@@ -779,6 +780,7 @@ Takes no options of its own.
 | `--run-stamp {on,off}` | put this run's forecast files, pictures and diagnostics in its own timestamped folder under --outdir (default on): --outdir/run-<YYYYMMDD>-<HHMMSS>Z_i<YYYYMMDD><HHMM>Z/ (launch instant UTC, then the model initialisation time; the _i part is omitted when the run's init time cannot be read). Successive runs of one configuration then never overwrite or interleave each other. 'off' writes straight into --outdir, which is what releases up to 2.4.1 did; it is kept only for a consumer still written against that and is a workaround, not a supported alternative |
 | `--section lat,lon,lat,lon\|FILE.json` | the line the vertical-section products (xsec:<fill>[/<overlay>...] in --products) are cut along, the same value `gpuwm render --section` takes; a JSON file gives {start, end} or a {points, extend_km} polyline. Spell a line that starts with a minus sign as --section=-33.9,151.2,-34.1,151.3. An xsec: product with no line is refused before anything is fetched |
 | `--smoke` | turn on HRRR-Smoke (transported smoke, its radiative feedback, RAVE fires); in 2.9.4 it costs about 11x per step on full CONUS (measured on 8x RTX 5090) |
+| `--smoke-radiation {on,off}` | explicit transported aerosol radiation feedback: on selects live SW/LW optics instead of aerosol climatology and shortwave-only smoke; off disables live feedback. Requires active optical mass rows; omitted preserves the recipe. See docs/solar-products.md |
 | `--source SOURCE[:N],...` | create a 3 km WoFS-shape ensemble domain; mixed family counts sum to --members; eligible registry ids: hrrr, hrrr-prs, gem-gdps, icon-global, icon-eu, icon-d2, gfs, gdas, gefs-v11-flat, gefs-reforecast, gefs-reforecast-weekly, gefs-v11, gefs, aigfs, aigefs, ecmwf-open-data, ecmwf-open-data-0p1, ecmwf-ens, aifs, earth2, earth2-fcn3, earth2-sfno, earth2-pangu, earth2-aurora, earth2-fengwu, earth2-aifs, earth2-fuxi, earth2-stormcast, earth2-atlas, earth2-atlas-si, earth2-aifs2, earth2-aifs-ens, earth2-aifs2-ens, earth2-aurora15, earth2-aurora15-6h, earth2-aurora15-ensemble, earth2-aurora15-ensemble-6h, earth2-gencast-mini, earth2-weathernext2, earth2-weathernext2-mini, earth2-ucast, earth2-graphcast-operational, earth2-graphcast-small, earth2-stormcast-conus, earth2-atlas-crps, rap-native, hrrr-native, rap, rrfs, rrfs-ens, era5, era5-l137, 20crv3, 20crv3-cf |
 | `--stage-only STAGE` | _(accepted, but not listed by --help)_ |
 | `--static-cache-key` | _(accepted, but not listed by --help)_ |
@@ -791,6 +793,7 @@ Takes no options of its own.
 | `--warm-kernels` | _(accepted, but not listed by --help)_ |
 | `--whole-cycle` | download routes only: the fetch stage waits for the whole cycle (the old rule) instead of taking each lead as it posts; wins over the config's [fetch] as_posted |
 | `--wind-amplitude` | fill uniform U/V amplitude in m/s; 0 disables it |
+| `--wind-farms uswtdb\|TABLE\|off` | opt-in Fitch turbine drag and TKE from USWTDB or a WRF/JSON turbine table |
 | `--wps-namelist PATH` | with --prepared-root: the exact WPS authority required by a single-domain portable bundle |
 
 ## `gpuwm ensemble-products`
@@ -961,6 +964,8 @@ Takes no options of its own.
 | `--ocean` | also stage the 12 NOAA WOA18 monthly mixed-layer-depth files (about 85 MB) the default mixed-layer ocean initializes from, SHA-256 verified, into the cache forecasts read (GPUWM_OCEAN_CACHE, else <case data root>/ocean), so no forecast fetches them from NCEI at start |
 | `--ocean-only` | stage only the ocean climatology and leave the coefficient tables alone |
 | `--ocean-root DIR` | stage the ocean climatology into DIR (same meaning as GPUWM_OCEAN_CACHE) |
+| `--replace-damaged` | with --schemes and --from, replace damaged files only after source pin verification |
+| `--schemes FAMILY` | stage only named physics table families, e.g. p3 noah tempo rrtmgp; see gpuwm.tables |
 | `--thompson-fork` | also stage the pinned WRF 3.9 fork Thompson coefficient set (thompson_version = "wrf_39_noaa", the HRRR configurations' tables; 330 MiB) into ~/.gpuwm/tables/thompson-wrf39-noaa: from --from DIR, packaged fork data, an explicitly selected mirror, or the release assets, SHA-256-verified against the packaged pins before install. Runs that select the fork acquire it automatically |
 | `--thompson-fork-only` | stage only the fork coefficient set and leave classic tables alone |
 | `--thompson-fork-root DIR` | stage fork tables into DIR instead of the selected fork cache |
@@ -1061,6 +1066,7 @@ Takes no options of its own.
 | `--no-probe` | with --readiness: compute the schedule from the source table only and ask no host |
 | `--no-surface-fill` | disable fill soil/SST perturbations |
 | `--no-verify-visuals` | skip postforecast observation verification; the physical run is unchanged |
+| `--nudging {off,spectral,grid}` | relax toward prepared source analyses; spectral keeps only the configured large-scale modes |
 | `--outdir DIR` | output root for one timestamped run folder per launch, with forecast files, pictures and diagnostics (default <config-stem>-go beside the config); an existing run-... folder is used directly |
 | `--output-config TOML` | Read [output] formats and icechunk_store from TOML; CLI values override it |
 | `--output-format FORMATS` | Output-format table rows, comma separated (default netcdf); netcdf,icechunk adds atomic native Zarr v3 history |
@@ -1079,6 +1085,7 @@ Takes no options of its own.
 | `--run-stamp {on,off}` | put this run's forecast files, pictures and diagnostics in its own timestamped folder under --outdir (default on): --outdir/run-<YYYYMMDD>-<HHMMSS>Z_i<YYYYMMDD><HHMM>Z/ (launch instant UTC, then the model initialisation time; the _i part is omitted when the run's init time cannot be read). Successive runs of one configuration then never overwrite or interleave each other. 'off' writes straight into --outdir, which is what releases up to 2.4.1 did; it is kept only for a consumer still written against that and is a workaround, not a supported alternative |
 | `--section lat,lon,lat,lon\|FILE.json` | the line the vertical-section products (xsec:<fill>[/<overlay>...] in --products) are cut along, the same value `gpuwm render --section` takes; a JSON file gives {start, end} or a {points, extend_km} polyline. Spell a line that starts with a minus sign as --section=-33.9,151.2,-34.1,151.3. An xsec: product with no line is refused before anything is fetched |
 | `--smoke` | turn on HRRR-Smoke (transported smoke, its radiative feedback, RAVE fires); in 2.9.4 it costs about 11x per step on full CONUS (measured on 8x RTX 5090) |
+| `--smoke-radiation {on,off}` | explicit transported aerosol radiation feedback: on selects live SW/LW optics instead of aerosol climatology and shortwave-only smoke; off disables live feedback. Requires active optical mass rows; omitted preserves the recipe. See docs/solar-products.md |
 | `--source SOURCE[:N],...` | create a 3 km WoFS-shape ensemble domain; mixed family counts sum to --members; eligible registry ids: hrrr, hrrr-prs, gem-gdps, icon-global, icon-eu, icon-d2, gfs, gdas, gefs-v11-flat, gefs-reforecast, gefs-reforecast-weekly, gefs-v11, gefs, aigfs, aigefs, ecmwf-open-data, ecmwf-open-data-0p1, ecmwf-ens, aifs, earth2, earth2-fcn3, earth2-sfno, earth2-pangu, earth2-aurora, earth2-fengwu, earth2-aifs, earth2-fuxi, earth2-stormcast, earth2-atlas, earth2-atlas-si, earth2-aifs2, earth2-aifs-ens, earth2-aifs2-ens, earth2-aurora15, earth2-aurora15-6h, earth2-aurora15-ensemble, earth2-aurora15-ensemble-6h, earth2-gencast-mini, earth2-weathernext2, earth2-weathernext2-mini, earth2-ucast, earth2-graphcast-operational, earth2-graphcast-small, earth2-stormcast-conus, earth2-atlas-crps, rap-native, hrrr-native, rap, rrfs, rrfs-ens, era5, era5-l137, 20crv3, 20crv3-cf |
 | `--stage-only STAGE` | _(accepted, but not listed by --help)_ |
 | `--static-cache-key` | _(accepted, but not listed by --help)_ |
@@ -1091,6 +1098,7 @@ Takes no options of its own.
 | `--warm-kernels` | _(accepted, but not listed by --help)_ |
 | `--whole-cycle` | download routes only: the fetch stage waits for the whole cycle (the old rule) instead of taking each lead as it posts; wins over the config's [fetch] as_posted |
 | `--wind-amplitude` | fill uniform U/V amplitude in m/s; 0 disables it |
+| `--wind-farms uswtdb\|TABLE\|off` | opt-in Fitch turbine drag and TKE from USWTDB or a WRF/JSON turbine table |
 | `--wps-namelist PATH` | with --prepared-root: the exact WPS authority required by a single-domain portable bundle |
 
 ## `gpuwm gui`
@@ -1898,6 +1906,74 @@ Takes no options of its own.
 | `--render` | _(the parser declares no help text for this option)_ |
 | `--research-data-licence` | explicit opt-in to the named non-default data licence |
 
+## `gpuwm ocean waves`
+
+Takes no options of its own.
+
+## `gpuwm ocean waves audit`
+
+| argument | what it does |
+|---|---|
+| `request` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
+
+## `gpuwm ocean waves catalog`
+
+| argument | what it does |
+|---|---|
+| `request` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
+
+## `gpuwm ocean waves forcing`
+
+| argument | what it does |
+|---|---|
+| `request` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
+
+## `gpuwm ocean waves observations`
+
+| argument | what it does |
+|---|---|
+| `request` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
+
+## `gpuwm ocean waves prepare`
+
+| argument | what it does |
+|---|---|
+| `request` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
+
+## `gpuwm ocean waves products`
+
+| argument | what it does |
+|---|---|
+| `request` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
+
+## `gpuwm ocean waves stage`
+
+| argument | what it does |
+|---|---|
+| `request` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
+
+## `gpuwm ocean waves verify`
+
+| argument | what it does |
+|---|---|
+| `request` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
+
 ## `gpuwm physics-catalog`
 
 | option | what it does |
@@ -1933,6 +2009,7 @@ Takes no options of its own.
 | `--domain-spec` | strict gpuwm-hrrr-target-domain-v1 Lambert root-domain JSON; nested layouts come from --wps-namelist/--namelist-input |
 | `--dry-run` | validate route-specific arguments and print the exact internal command |
 | `--experiment-config` | _(the parser declares no help text for this option)_ |
+| `--experiment-config-suite` | bind the explicitly configured physics suite in the native export |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--extend-root-preparation` | sealed HRRR predecessor to extend by exactly one forcing hour |
 | `--forecast-end-hour` | inclusive absolute HRRR source lead |
@@ -2688,15 +2765,18 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
+| `--band {S,C,X}` | override the site band |
 | `--config` | TOML with a [simulated_radar] table |
 | `--describe` | inspect installed native capabilities, accepted inputs and routes as JSON |
 | `--estimate` | report native scan dimensions and memory admission without generating radar |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--formats` | comma-separated output formats |
 | `--input-kind {wrf,native-columns}` | full WRF histories or native-atmosphere.columns/v1 transports |
+| `--list-sites` | show simulation sites and world reference rows with band metadata |
 | `--outdir` | run root receiving radar/manifest.json |
 | `--sites` | auto or comma-separated radar IDs |
 | `--timing {history,scan}` | history scans each saved snapshot; scan lets rays use neighboring history times (overrides the --config table; default history) |
+| `--wavelength-mm` | select legacy S at 107.068735 mm or a 53.5/33.3 mm C/X table |
 
 ## `gpuwm solar`
 
@@ -3548,6 +3628,7 @@ Takes no options of its own.
 | `--domain-spec` | strict gpuwm-hrrr-target-domain-v1 Lambert root-domain JSON; nested layouts come from --wps-namelist/--namelist-input |
 | `--dry-run` | validate route-specific arguments and print the exact internal command |
 | `--experiment-config` | _(the parser declares no help text for this option)_ |
+| `--experiment-config-suite` | bind the explicitly configured physics suite in the native export |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--extend-root-preparation` | sealed HRRR predecessor to extend by exactly one forcing hour |
 | `--forecast-end-hour` | inclusive absolute HRRR source lead |

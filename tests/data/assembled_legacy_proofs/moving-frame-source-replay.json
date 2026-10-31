@@ -1,0 +1,410 @@
+{
+  "schema": "measured-moving-frame-source-replay-v1",
+  "base": "afe2905d568d41880ee04a1a26d3efeb80791034",
+  "tip": "6040eede71abc4e8c34017986cd2d97873d15ed3",
+  "sources": {
+    "gpuwm/core/dycore.py": {
+      "before": {
+        "bytes": 254812,
+        "sha256": "7a21590269ebcaaf8b32cfd0addcb36bda84a34e71d8dfbf1a961aaf637dd144"
+      },
+      "after": {
+        "bytes": 255566,
+        "sha256": "9a649bfa17b9fd1bac9e6b88d8587451c799e4df75392d32d526d0ac50d7409a"
+      }
+    }
+  },
+  "dependencies": {
+    "gpuwm/moving_frame.py": {
+      "bytes": 4828,
+      "sha256": "2855229e7b594dc7d4b916a8d936a9739d59683adde99515858116924e578e6f"
+    },
+    "gpuwm/config.py": {
+      "bytes": 450539,
+      "sha256": "f76eea49f89e4d00b9dbadfe195f6cb5e7ff13d0aa58f99c8e23a42133e674ee"
+    }
+  },
+  "measurements": {
+    "coordinate": {
+      "arrays": 272,
+      "words": 178128,
+      "changed_arrays": 0,
+      "different_words": 0,
+      "changes": {}
+    },
+    "drivers": {
+      "arrays": 2618,
+      "words": 31686592,
+      "changed_arrays": 0,
+      "different_words": 0,
+      "changes": {}
+    },
+    "acoustic": {
+      "arrays": 132,
+      "words": 305632,
+      "changed_arrays": 0,
+      "different_words": 0,
+      "changes": {}
+    }
+  },
+  "artifacts": {
+    "base-coordinate/source-audit.json": "99c49ff1abf721798414db011212811a3b67a25ac1e6b20e2f05a8891e27bfb0",
+    "base-coordinate/direct-native-proof.json": "6f7b9076addd116e4c50b8648abe020d5554345bf6c27075d6d2f3b2325b0ddd",
+    "tip-coordinate/source-audit.json": "f494df09cf308810c79055366aa2a4b6848106b26ff259c70579d3c949b0a0a9",
+    "tip-coordinate/direct-native-proof.json": "d74d9224066a6b79255a34dc1b9a5537063ba383c78f0b8b530a40dcbb8b5e28",
+    "base-drivers/source-audit.json": "b491f9d494df5345d372aaeb623e2b39860dc83c22f810a9ec87c180446adb47",
+    "base-drivers/horizontal-driver.json": "8ff6239a15366c2794e0442e243958c103eb8084a90603c28ea22a5374e9936b",
+    "base-drivers/vertical-driver.json": "fd8e38c84b3e2153e0f41d4d8e4f7d817664fd2b78b608aa5156a9d54081c936",
+    "base-drivers/km-mutations.json": "b586de7aad2a6bc7736e35e4bdb73b8cdfe0d39a70f37c037467abf30337cdd6",
+    "tip-drivers/source-audit.json": "db0b7cc6ccfcfeef8db6e9653001251399a87e62b08c5905ee0197dc15dd44f9",
+    "tip-drivers/horizontal-driver.json": "8ff6239a15366c2794e0442e243958c103eb8084a90603c28ea22a5374e9936b",
+    "tip-drivers/vertical-driver.json": "fd8e38c84b3e2153e0f41d4d8e4f7d817664fd2b78b608aa5156a9d54081c936",
+    "tip-drivers/km-mutations.json": "b586de7aad2a6bc7736e35e4bdb73b8cdfe0d39a70f37c037467abf30337cdd6",
+    "base-acoustic/source-audit.json": "a46f8aac1a5bb251f0b43601069bac3dd78b2d51118901cae6a301e56cf7937d",
+    "base-acoustic/acoustic-published-default-proof.json": "fbc27ac35ee3273a2f548835287ba9467afddb2be9a57ad838a582c36176c96a",
+    "tip-acoustic/source-audit.json": "6242dea9f07227282828a38d7be6827807b0c8413e81784f42166dc129c4c9c4",
+    "tip-acoustic/acoustic-published-default-proof.json": "987f55c1a5770341e6aafdaace1dd7d66ee601d9a25b8301d3b792efea497d1c"
+  },
+  "capture_identity": {
+    "device": "b'NVIDIA GeForce RTX 5090'",
+    "compute_capability": [
+      12,
+      0
+    ],
+    "nvrtc_version": [
+      12,
+      9
+    ],
+    "cupy_version": "14.2.0",
+    "module_source_sha256": {
+      "smag2d": "e0ddc6075c1da84434eea66c55f39340e40a273c1080ae32578540a706b8e270",
+      "diff_opt1": "9737655267fca7f30d0a4053008997de55a8e12f4fe552622a09f70ea994e271",
+      "acoustic": "22704608360351a64d84bbf90ed1574e8e62edb5b06f5deea85376d93fca5cf8"
+    },
+    "module_options": {
+      "smag2d": [
+        "-std=c++17",
+        "--fmad=false",
+        "--ftz=false",
+        "--prec-div=true",
+        "--prec-sqrt=true",
+        "-DGPUWM_WRF_EXACT_C_DIFFUSION=1"
+      ],
+      "diff_opt1": [
+        "-std=c++17",
+        "--fmad=false",
+        "--ftz=false",
+        "--prec-div=true",
+        "--prec-sqrt=true",
+        "-DGPUWM_WRF_EXACT_C_DIFFUSION=1"
+      ],
+      "acoustic": [
+        "-std=c++17"
+      ]
+    },
+    "strict": false,
+    "default_diffusion": true,
+    "acoustic_function_options": {
+      "calc_coefs": [
+        "-std=c++17"
+      ],
+      "advance_w_phi": [
+        "-std=c++17"
+      ],
+      "advance_w_phi_msf": [
+        "-std=c++17"
+      ]
+    },
+    "default_acoustic_diffusion_route": false
+  },
+  "source_inputs": {
+    "base-coordinate": {
+      "gpuwm/core/kernels/smag2d.cu": {
+        "sha256": "731d7f64e86af2d17344be7328fda2a3ecfd4f2e22371f6093128ca2f3192500",
+        "bytes": 140826
+      },
+      "gpuwm/core/kernels/diff_opt1.cu": {
+        "sha256": "bbe1360f8ea5249270a89a11f5f2cd77f3fdc573d66d57755a37852ddacaa161",
+        "bytes": 7005
+      },
+      "gpuwm/core/kernels/common.cuh": {
+        "sha256": "c78b17cb02ef67a2ad24d19e06e1129d7d5bcda74b972b38470fd33a6e58ff43",
+        "bytes": 332
+      },
+      "gpuwm/core/kernels/__init__.py": {
+        "sha256": "cd5533e48c6b7c898aa49da76f480561c0983b1e616e5709d4f036de4a734d50",
+        "bytes": 56279
+      },
+      "gpuwm/core/constants.py": {
+        "sha256": "5f1878bc3bb2b13f458814d7dc43a0062ac7e6c16363397ebda29169481d2c35",
+        "bytes": 5308
+      },
+      "gpuwm/core/dycore.py": {
+        "sha256": "7a21590269ebcaaf8b32cfd0addcb36bda84a34e71d8dfbf1a961aaf637dd144",
+        "bytes": 254812
+      },
+      "gpuwm/nvrtc_ptx_cache.py": {
+        "sha256": "5929748d63f633f1dcb26c281e52664a41b0e47203b45aecb762cd84bd6833c9",
+        "bytes": 14069
+      },
+      "gpuwm/wrf_exact.py": {
+        "sha256": "d732e6ae4b6487302b4e06af8c3cdd601a8dfcdb8fe40599f1bc1a6be715406d",
+        "bytes": 5260
+      },
+      "gpuwm/verify/smallstep_oracle.py": {
+        "sha256": "8e8db7b72c07bdbe62c9ae7d2ecc4dd66331dbcabd6c1dc87f93d63659f2fb39",
+        "bytes": 6068
+      },
+      "gpuwm/core/fp32_ulp.py": {
+        "sha256": "e7a63f76f5457bddcb16ecf28288c25ba210a372aa31e5c8f6a5eb136f01cfe2",
+        "bytes": 7856
+      },
+      "tools/assembled_legacy_replay.py": {
+        "sha256": "f53f4c541b052cdbef7ad554f8aae5b4c624e91a2b40515496b2523bea9e42fb",
+        "bytes": 22340
+      },
+      "tools/wrf_diffopt1_oracle/capture.py": {
+        "sha256": "aedbec22cffb8ae351d92be9afe24780cccc847323bd59783f01fea476ab6df7",
+        "bytes": 9788
+      },
+      "tools/wrf_diffopt1_oracle/model_case.py": {
+        "sha256": "2cda07b2ca5a32e60f4ac6032e0f0231c01dff99abbad17894b09a75313dadc1",
+        "bytes": 3506
+      },
+      "tools/wrf_diffopt1_oracle/source_transition.py": {
+        "sha256": "8f9d2f1ea4a4a443cb807c4d218f8388dfe0939985ba3807d12605cb5353ed93",
+        "bytes": 6716
+      },
+      "tests/data/wrf471_diff_opt1/wrf471.npz": {
+        "sha256": "461e735c1105391e5b9f095e0a1d188d80d36624b6d18ba38b685b1355c09788",
+        "bytes": 1357832
+      },
+      "tests/data/wrf471_diff_opt1/wrf471.json": {
+        "sha256": "1db2eb92cb3ab286f304136678e6df5af95002a42c22f91ce30b49d6010f28d8",
+        "bytes": 17277
+      },
+      "tests/data/wrf471_diff_opt1/merged-gpu.npz": {
+        "sha256": "508de1e310977aabf905ee01a2ec55b1d42302ca6b3fae93c90e2c81e0463de5",
+        "bytes": 491382
+      },
+      "tests/data/wrf471_diff_opt1/merged-gpu.json": {
+        "sha256": "80d741474fa131f1f7f9935f936acd896d524b2c08b3a63b8aba38db0ad728e9",
+        "bytes": 45013
+      }
+    },
+    "tip-coordinate": {
+      "gpuwm/core/kernels/smag2d.cu": {
+        "sha256": "731d7f64e86af2d17344be7328fda2a3ecfd4f2e22371f6093128ca2f3192500",
+        "bytes": 140826
+      },
+      "gpuwm/core/kernels/diff_opt1.cu": {
+        "sha256": "bbe1360f8ea5249270a89a11f5f2cd77f3fdc573d66d57755a37852ddacaa161",
+        "bytes": 7005
+      },
+      "gpuwm/core/kernels/common.cuh": {
+        "sha256": "c78b17cb02ef67a2ad24d19e06e1129d7d5bcda74b972b38470fd33a6e58ff43",
+        "bytes": 332
+      },
+      "gpuwm/core/kernels/__init__.py": {
+        "sha256": "cd5533e48c6b7c898aa49da76f480561c0983b1e616e5709d4f036de4a734d50",
+        "bytes": 56279
+      },
+      "gpuwm/core/constants.py": {
+        "sha256": "5f1878bc3bb2b13f458814d7dc43a0062ac7e6c16363397ebda29169481d2c35",
+        "bytes": 5308
+      },
+      "gpuwm/core/dycore.py": {
+        "sha256": "9a649bfa17b9fd1bac9e6b88d8587451c799e4df75392d32d526d0ac50d7409a",
+        "bytes": 255566
+      },
+      "gpuwm/nvrtc_ptx_cache.py": {
+        "sha256": "5929748d63f633f1dcb26c281e52664a41b0e47203b45aecb762cd84bd6833c9",
+        "bytes": 14069
+      },
+      "gpuwm/wrf_exact.py": {
+        "sha256": "d732e6ae4b6487302b4e06af8c3cdd601a8dfcdb8fe40599f1bc1a6be715406d",
+        "bytes": 5260
+      },
+      "gpuwm/verify/smallstep_oracle.py": {
+        "sha256": "8e8db7b72c07bdbe62c9ae7d2ecc4dd66331dbcabd6c1dc87f93d63659f2fb39",
+        "bytes": 6068
+      },
+      "gpuwm/core/fp32_ulp.py": {
+        "sha256": "e7a63f76f5457bddcb16ecf28288c25ba210a372aa31e5c8f6a5eb136f01cfe2",
+        "bytes": 7856
+      },
+      "tools/assembled_legacy_replay.py": {
+        "sha256": "f53f4c541b052cdbef7ad554f8aae5b4c624e91a2b40515496b2523bea9e42fb",
+        "bytes": 22340
+      },
+      "tools/wrf_diffopt1_oracle/capture.py": {
+        "sha256": "aedbec22cffb8ae351d92be9afe24780cccc847323bd59783f01fea476ab6df7",
+        "bytes": 9788
+      },
+      "tools/wrf_diffopt1_oracle/model_case.py": {
+        "sha256": "2cda07b2ca5a32e60f4ac6032e0f0231c01dff99abbad17894b09a75313dadc1",
+        "bytes": 3506
+      },
+      "tools/wrf_diffopt1_oracle/source_transition.py": {
+        "sha256": "8f9d2f1ea4a4a443cb807c4d218f8388dfe0939985ba3807d12605cb5353ed93",
+        "bytes": 6716
+      },
+      "tests/data/wrf471_diff_opt1/wrf471.npz": {
+        "sha256": "461e735c1105391e5b9f095e0a1d188d80d36624b6d18ba38b685b1355c09788",
+        "bytes": 1357832
+      },
+      "tests/data/wrf471_diff_opt1/wrf471.json": {
+        "sha256": "1db2eb92cb3ab286f304136678e6df5af95002a42c22f91ce30b49d6010f28d8",
+        "bytes": 17277
+      },
+      "tests/data/wrf471_diff_opt1/merged-gpu.npz": {
+        "sha256": "508de1e310977aabf905ee01a2ec55b1d42302ca6b3fae93c90e2c81e0463de5",
+        "bytes": 491382
+      },
+      "tests/data/wrf471_diff_opt1/merged-gpu.json": {
+        "sha256": "80d741474fa131f1f7f9935f936acd896d524b2c08b3a63b8aba38db0ad728e9",
+        "bytes": 45013
+      }
+    },
+    "base-acoustic": {
+      "gpuwm/core/kernels/acoustic.cu": {
+        "sha256": "89af01f989f6a61a697fba00f1effcfe393d74016a52a5cd100a184701adbc25",
+        "bytes": 107777
+      },
+      "gpuwm/core/kernels/common.cuh": {
+        "sha256": "c78b17cb02ef67a2ad24d19e06e1129d7d5bcda74b972b38470fd33a6e58ff43",
+        "bytes": 332
+      },
+      "gpuwm/core/kernels/__init__.py": {
+        "sha256": "cd5533e48c6b7c898aa49da76f480561c0983b1e616e5709d4f036de4a734d50",
+        "bytes": 56279
+      },
+      "gpuwm/core/constants.py": {
+        "sha256": "5f1878bc3bb2b13f458814d7dc43a0062ac7e6c16363397ebda29169481d2c35",
+        "bytes": 5308
+      },
+      "gpuwm/core/acoustic.py": {
+        "sha256": "1105071240a84e04bb7dde1105a88b1fdd48b1a8881ee3ae1c247aaad78c2277",
+        "bytes": 43505
+      },
+      "gpuwm/verify/smallstep_vertical_oracle.py": {
+        "sha256": "36deb62e91a610d358cb0e283e2b4820273eaf44e1ae0d0775dc42eb0d671b83",
+        "bytes": 30530
+      },
+      "gpuwm/verify/smallstep_oracle.py": {
+        "sha256": "8e8db7b72c07bdbe62c9ae7d2ecc4dd66331dbcabd6c1dc87f93d63659f2fb39",
+        "bytes": 6068
+      },
+      "gpuwm/verify/default_kernel_source.py": {
+        "sha256": "79b0ad7e9cf251e22d619dc29f2aec132a1ade92c681660647819c2efa530490",
+        "bytes": 3670
+      },
+      "gpuwm/core/fp32_ulp.py": {
+        "sha256": "e7a63f76f5457bddcb16ecf28288c25ba210a372aa31e5c8f6a5eb136f01cfe2",
+        "bytes": 7856
+      },
+      "gpuwm/wrf_exact.py": {
+        "sha256": "d732e6ae4b6487302b4e06af8c3cdd601a8dfcdb8fe40599f1bc1a6be715406d",
+        "bytes": 5260
+      },
+      "gpuwm/nvrtc_ptx_cache.py": {
+        "sha256": "5929748d63f633f1dcb26c281e52664a41b0e47203b45aecb762cd84bd6833c9",
+        "bytes": 14069
+      },
+      "tools/assembled_legacy_replay.py": {
+        "sha256": "f53f4c541b052cdbef7ad554f8aae5b4c624e91a2b40515496b2523bea9e42fb",
+        "bytes": 22340
+      },
+      "tools/smallstep_wrf471_oracle/vertical_workspace.py": {
+        "sha256": "ba19d104cbee78aab0ea3381f39b2e372a90737e33c5368c53c6e793a17b489b",
+        "bytes": 2174
+      },
+      "tests/data/wrf471_smallstep/vertical-reference.npz": {
+        "sha256": "1df27b8ead3dfd65b6c6a3059eba5ef27bf669b86d20656ad1762408f89189ad",
+        "bytes": 1926358
+      },
+      "tests/data/wrf471_smallstep/cases.json": {
+        "sha256": "52993ba05d61a7778e461ea146c995e6fad67313b2444dea9d36568d7193992b",
+        "bytes": 8000
+      },
+      "tests/data/wrf471_smallstep/real-state.npz": {
+        "sha256": "adbbb0f7a637c05f7bffc7b26ba5e6502054eb3c86a800577e6dc77ac2bab6a1",
+        "bytes": 570083
+      }
+    },
+    "tip-acoustic": {
+      "gpuwm/core/kernels/acoustic.cu": {
+        "sha256": "89af01f989f6a61a697fba00f1effcfe393d74016a52a5cd100a184701adbc25",
+        "bytes": 107777
+      },
+      "gpuwm/core/kernels/common.cuh": {
+        "sha256": "c78b17cb02ef67a2ad24d19e06e1129d7d5bcda74b972b38470fd33a6e58ff43",
+        "bytes": 332
+      },
+      "gpuwm/core/kernels/__init__.py": {
+        "sha256": "cd5533e48c6b7c898aa49da76f480561c0983b1e616e5709d4f036de4a734d50",
+        "bytes": 56279
+      },
+      "gpuwm/core/constants.py": {
+        "sha256": "5f1878bc3bb2b13f458814d7dc43a0062ac7e6c16363397ebda29169481d2c35",
+        "bytes": 5308
+      },
+      "gpuwm/core/acoustic.py": {
+        "sha256": "1105071240a84e04bb7dde1105a88b1fdd48b1a8881ee3ae1c247aaad78c2277",
+        "bytes": 43505
+      },
+      "gpuwm/verify/smallstep_vertical_oracle.py": {
+        "sha256": "36deb62e91a610d358cb0e283e2b4820273eaf44e1ae0d0775dc42eb0d671b83",
+        "bytes": 30530
+      },
+      "gpuwm/verify/smallstep_oracle.py": {
+        "sha256": "8e8db7b72c07bdbe62c9ae7d2ecc4dd66331dbcabd6c1dc87f93d63659f2fb39",
+        "bytes": 6068
+      },
+      "gpuwm/verify/default_kernel_source.py": {
+        "sha256": "79b0ad7e9cf251e22d619dc29f2aec132a1ade92c681660647819c2efa530490",
+        "bytes": 3670
+      },
+      "gpuwm/core/fp32_ulp.py": {
+        "sha256": "e7a63f76f5457bddcb16ecf28288c25ba210a372aa31e5c8f6a5eb136f01cfe2",
+        "bytes": 7856
+      },
+      "gpuwm/wrf_exact.py": {
+        "sha256": "d732e6ae4b6487302b4e06af8c3cdd601a8dfcdb8fe40599f1bc1a6be715406d",
+        "bytes": 5260
+      },
+      "gpuwm/nvrtc_ptx_cache.py": {
+        "sha256": "5929748d63f633f1dcb26c281e52664a41b0e47203b45aecb762cd84bd6833c9",
+        "bytes": 14069
+      },
+      "tools/assembled_legacy_replay.py": {
+        "sha256": "f53f4c541b052cdbef7ad554f8aae5b4c624e91a2b40515496b2523bea9e42fb",
+        "bytes": 22340
+      },
+      "tools/smallstep_wrf471_oracle/vertical_workspace.py": {
+        "sha256": "ba19d104cbee78aab0ea3381f39b2e372a90737e33c5368c53c6e793a17b489b",
+        "bytes": 2174
+      },
+      "tests/data/wrf471_smallstep/vertical-reference.npz": {
+        "sha256": "1df27b8ead3dfd65b6c6a3059eba5ef27bf669b86d20656ad1762408f89189ad",
+        "bytes": 1926358
+      },
+      "tests/data/wrf471_smallstep/cases.json": {
+        "sha256": "52993ba05d61a7778e461ea146c995e6fad67313b2444dea9d36568d7193992b",
+        "bytes": 8000
+      },
+      "tests/data/wrf471_smallstep/real-state.npz": {
+        "sha256": "adbbb0f7a637c05f7bffc7b26ba5e6502054eb3c86a800577e6dc77ac2bab6a1",
+        "bytes": 570083
+      }
+    }
+  },
+  "generator": "tools/assembled_legacy_replay.py",
+  "generator_sha256": "f53f4c541b052cdbef7ad554f8aae5b4c624e91a2b40515496b2523bea9e42fb",
+  "recorder": "tools/battery/moving_frame_source_receipt.py",
+  "recorder_sha256": "98921fb2ded2e8b96a917e802e9acc62da58b20ffa143c4a7e2d78c48428b4e6",
+  "measurement_tool": "tools/battery/fusion_source_receipt.py",
+  "measurement_tool_sha256": "92060d4265d6c56ffee0ba6e14d9fd4dfb68c721ba09964847f737ba8ff287f8",
+  "numerics": "strict",
+  "scope": "default frame; unchanged base/tip words; coordinate native exact and acoustic published exact"
+}

@@ -800,6 +800,7 @@ def initialize_and_export_regular_source_hierarchy(
         relative_humidity_convention: str = "era5_mixed",
         lake_whole_source_search: bool = False,
         lake_ice_provider=None,
+        nudging_context=None,
 ) -> RegularSourceHierarchyResult:
     """Feed a prepared GFS/ERA5 root and verified child inputs to the join.
 
@@ -910,6 +911,14 @@ def initialize_and_export_regular_source_hierarchy(
         artifact_manifest_reference=artifact_manifest_reference,
         stock_wrf_export=stock_wrf_export,
     )
+    if nudging_context is not None:
+        from gpuwm.spectral_nudging.prepared import write_nested_analyses
+        analysis_root, root_at = nudging_context
+        write_nested_analyses(analysis_root, exp, times, source_manifest_sha256,
+            catalog=catalog, root_grid=grids[0], root_at=root_at,
+            source_orography=source_orography, workers=workers,
+            preprocess_backend=backend, cpu_bridge=cpu_bridge,
+            sfcp_to_sfcp=sfcp_to_sfcp, soil_layer_contract=soil_layer_contract)
     if corridor_receipt is not None:
         move_statics_corridor_set(
             pending_corridor,

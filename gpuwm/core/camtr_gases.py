@@ -59,6 +59,8 @@ def load_camtr(path: str | None = None) -> CamtrTable:
     """Read the table as WRF does: two header lines, then
     ``(I4, 1x, F8.3, 1x, 4(F10.3, 1x))`` to end of file."""
     source = Path(path) if path else CAMTR_DEFAULT
+    from gpuwm.tables import table_path
+    source = table_path("camtr", source)
     lines = source.read_text(encoding="ascii").splitlines()[2:]
     years, juldata = [], []
     gases = {name: [] for name in GAS_NAMES}

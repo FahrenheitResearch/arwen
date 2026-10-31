@@ -15,7 +15,8 @@ WORKSPACE_BUDGET_BYTES=512*1024*1024
 def _table_manifest():
     from gpuwm import data_assets
     path=data_assets.data_path("satmedmf/manifest.json")
-    return json.loads(path.read_text(encoding="utf-8"))
+    from gpuwm.tables import table_path
+    return json.loads(table_path("satmedmf", path).read_text(encoding="utf-8"))
 
 def build_table():
     """Generate with WOOF math and require the manifest's exact bytes."""
@@ -39,12 +40,18 @@ def _table():
     asset=TableAsset("fpvs-f64.bin",manifest["bytes"],manifest["sha256"])
     path=root/asset.filename
     if not path.exists():
+        import sys
+        print(f"gpuwm: SATMEDMF first use: generating {path} (size + SHA-256 verified)", file=sys.stderr, flush=True)
         raw=build_table().get().tobytes()
         root.mkdir(parents=True,exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=root,prefix="fpvs-",suffix=".tmp",delete=False) as f:
             temporary=Path(f.name);f.write(raw)
         os.replace(temporary,path)
-    raw=read_validated_table_asset(root,asset)
+    from gpuwm.tables import CorruptTableAssets
+    try:
+        raw=read_validated_table_asset(root,asset)
+    except (OSError,ValueError) as error:
+        raise CorruptTableAssets(f"SATMEDMF needs {path}: expected {asset.bytes} bytes, SHA-256 {asset.sha256}; run gpuwm fetch-tables --schemes satmedmf --from DIR --replace-damaged") from error
     return cp.asarray(np.frombuffer(raw,dtype="<f8"))
 
 

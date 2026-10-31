@@ -13,6 +13,8 @@ touches the GPU (deferred cupy import) -- the writer itself is
 CPU-importable.
 """
 from __future__ import annotations
+
+RADAR_INLOOP_VERSION = 2
 from collections.abc import Mapping
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass
@@ -813,6 +815,9 @@ def state_frame(
     import cupy as cp  # deferred: the writer itself stays CPU-importable
 
     with _state_device_context(state):
+        if getattr(state, "_moving_frame_velocity", None):
+            from gpuwm.moving_frame import initialize_moving_frame
+            initialize_moving_frame(state)
         ny, nx = state.mup.shape
         phb = cp.asnumpy(state.phb)
         if phb.ndim == 1:                     # flat base state: broadcast column
@@ -871,6 +876,9 @@ def state_frame(
         if getattr(state, "physics", None) is not None:
             fields.update({name: cp.asnumpy(array)
                            for name, array in state.physics.output_fields().items()})
+        if getattr(state, "_moving_frame_velocity", None):
+            from gpuwm.moving_frame import ground_relative_components
+            fields["U"], fields["V"] = ground_relative_components(state, fields["U"], fields["V"])
         return fields
 
 
@@ -1336,6 +1344,12 @@ class WrfoutWriter:
 
     def _dims_for(self, name, shape):
         nz, ny, nx = self.nz, self.ny, self.nx
+        if name in ("TURBINE_POWER", "TURBINE_HUB_WIND", "TURBINE_FARM_INDEX", "TURBINE_HUB_HEIGHT", "FARM_POWER", "FARM_HUB_WIND"):
+            if len(shape) != 1 or shape[0] < 1:
+                raise ValueError(f"wind-farm history {name} requires a nonempty one-dimensional index")
+            axis = "wind_turbine" if name.startswith("TURBINE_") else "wind_farm"
+            self._ensure_dimension(axis, shape[0])
+            return ("Time", axis)
         row = WRF_INPUT_HISTORY_ROWS.get(name, WRF_INITIALIZED_HISTORY_ROWS.get(name))
         if row is not None:
             dims = tuple(row["history_dimensions"])
@@ -1799,6 +1813,9 @@ def _device_state_frame(state, *, include_diagnostic_pressure: bool = True):
     import cupy as cp
 
     with _state_device_context(state):
+        if getattr(state, "_moving_frame_velocity", None):
+            from gpuwm.moving_frame import initialize_moving_frame
+            initialize_moving_frame(state)
         ny, nx = state.mup.shape
         phb = state.phb
         if phb.ndim == 1:
@@ -1838,6 +1855,9 @@ def _device_state_frame(state, *, include_diagnostic_pressure: bool = True):
         if _WRF_EXACT and getattr(state, "_wrf_frame_round_trip_due", False):
             from gpuwm.core.nest_round_trip import round_tripped_frame_fields
             fields = round_tripped_frame_fields(state, fields)
+        if getattr(state, "_moving_frame_velocity", None):
+            from gpuwm.moving_frame import ground_relative_components
+            fields["U"], fields["V"] = ground_relative_components(state, fields["U"], fields["V"])
         return fields
 
 
@@ -2291,6 +2311,10 @@ class AsyncDomainWrfoutWriter:
                 raise RuntimeError("cannot submit to a closed wrfout writer")
             self._raise_failure()
             producer = cp.cuda.get_current_stream()
+            if state is not None and getattr(state, "_moving_frame_velocity", None):
+                from gpuwm.moving_frame import moving_frame_attrs
+                base = self.global_attrs if global_attrs is None else global_attrs
+                global_attrs = {**base, **moving_frame_attrs(state)}
             if state is not None:
                 fire_attrs = fire_history_attrs(getattr(state, "physics", None))
                 if fire_attrs:
@@ -3063,7 +3087,11 @@ class PerDomainWrfoutWriters:
         # Requested radar output is checked by drain/close on the model
         # thread, since the writer treats landing callbacks as telemetry.
         if self._simulated_radar is not None:
-            self._simulated_radar.output_committed(**event)
+            from gpuwm.simulated_radar import inloop_enabled
+            private = (inloop_enabled()
+                       and getattr(self.model.node(int(event["domain"])).cfg, "quicklook_output", None) is not None)
+            if not private:
+                self._simulated_radar.output_committed(**event)
         if self._output_observer is not None:
             self._output_observer(**event)
 
@@ -3279,12 +3307,27 @@ class PerDomainWrfoutWriters:
             if log is not None and log and log[-1][2] is None:
                 log[-1][2] = round(time.perf_counter() - submitted, 6)
 
+    def _capture_radar(self, node, valid_time, refl_field, *, quicklook=False):
+        radar = getattr(self, "_simulated_radar", None)
+        if radar is not None and getattr(node.cfg, "quicklook_output", None) is not None:
+            from gpuwm.simulated_radar import inloop_enabled, RADAR_SCRATCH_FRAMES, RADAR_SNAPSHOT_FIELDS
+            if inloop_enabled():
+                writer = self._writers[node.cfg.grid_id]
+                # Snapshot staging and queue backpressure are output work, not a stalled model step.
+                work_bytes = (RADAR_SCRATCH_FRAMES * 4 * (writer.nx + 1) * (writer.ny + 1)
+                              * (len(RADAR_SNAPSHOT_FIELDS) * writer.nz + 15))
+                with self._write_beat(f"radar-snapshot-d{int(node.cfg.grid_id):02d}", work_bytes):
+                    radar.capture(node, valid_time, writer,
+                                  self._metadata_by_grid_id[node.cfg.grid_id], refl_field=refl_field, quicklook=quicklook)
+
     def _submit(self, node, ticks: int, *, refl_field=None,
                 submitted=None) -> None:
         if getattr(self, "_simulated_radar", None) is not None:
             self._simulated_radar.check()
         seconds = ticks / node.clock.tick_den
         valid_time = self.start_time + timedelta(seconds=seconds)
+        self._capture_radar(node, valid_time, refl_field,
+                            quicklook=quicklook_selection(node, ticks) is not None)
         episode = int(self._episode_by_grid_id.get(node.cfg.grid_id, 0))
         base_dir = self.output_dir
         # THE spelling, from `gpuwm.render_layout`, because the delivered

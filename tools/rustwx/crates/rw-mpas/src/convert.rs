@@ -244,6 +244,99 @@ pub fn grid_label(model_label: Option<&str>, cell_spacing_m: &[f64]) -> Option<S
     .then_some(label)
 }
 
+/// The token a caller's grid label (`rw_mpas_convert --grid-label`) may
+/// carry where the spacing THIS PICTURE shows goes ([`window_spacing_label`]):
+/// `Core zoom {spacing}` -> `Core zoom 8-38 km`.
+pub const GRID_LABEL_SPACING_TOKEN: &str = "{spacing}";
+
+/// How close to the coarsest sampled cell a cell must be to count as the
+/// picture's coarse end: the coarse end is the median of that band, so one
+/// distorted cell does not name it (the same reason [`mesh_spacing_label`]
+/// names a mesh by its regions).
+pub const WINDOW_COARSE_BAND: f64 = 1.1;
+
+/// The spacing a PICTURE shows, from the mesh cells its window samples
+/// (`sampled`, indices into `cell_spacing_m`): finest first, as a menu reads
+/// a range -- `8-38 km` for a zoom globe's core picture that reaches 38 km
+/// cells at its corners, `120 km` on a uniform mesh.
+///
+/// On a uniform mesh (the whole mesh within
+/// [`crate::window::MESH_FOCUS_REFINEMENT_FACTOR`] of its finest, the rule
+/// [`mesh_spacing_label`] and `--window mesh` share) it is one value, the
+/// median of the sampled cells.  On a variable mesh the fine end is the
+/// median of the sampled cells within that factor of the finest sampled
+/// (the refined region's own spacing, 3.04 km on a 3 km core, not its 2.5 km
+/// extreme cell) and the coarse end the median of the sampled cells within
+/// [`WINDOW_COARSE_BAND`] of the coarsest sampled; equal after rounding, one
+/// value.  `None` when no sampled cell has a usable spacing.
+///
+/// THE BREAKAGE THIS PREVENTS (Drew, 2026-10-30): every view of a zoom globe
+/// was headlined by the WHOLE mesh's range, so the core picture of
+/// run_713c9e1913164e02 read `(hex 133-6.9 km)` under a site menu entry
+/// `Core zoom · 8 → 38 km`, and the view around the core of
+/// run_c108e049fecb4bd0 showed `Δx 6.08 km` under `Around the core · 6 → 96 km`.
+pub fn window_spacing_label(cell_spacing_m: &[f64], sampled: &[usize]) -> Option<String> {
+    let usable = |s: f64| s.is_finite() && s > 0.0;
+    let values: Vec<f64> = sampled
+        .iter()
+        .filter_map(|&i| cell_spacing_m.get(i).copied())
+        .filter(|s| usable(*s))
+        .collect();
+    if values.is_empty() {
+        return None;
+    }
+    let factor = crate::window::MESH_FOCUS_REFINEMENT_FACTOR;
+    let (mesh_min, mesh_max) = cell_spacing_m
+        .iter()
+        .copied()
+        .filter(|s| usable(*s))
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), s| (lo.min(s), hi.max(s)));
+    if mesh_max <= factor * mesh_min {
+        return Some(format!("{} km", km_token(median(values))));
+    }
+    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let fine = km_token(median(values.iter().copied().filter(|s| *s <= factor * min).collect()));
+    let coarse = km_token(median(
+        values.into_iter().filter(|s| *s * WINDOW_COARSE_BAND >= max).collect(),
+    ));
+    Some(if fine == coarse { format!("{fine} km") } else { format!("{fine}-{coarse} km") })
+}
+
+/// A caller's grid label (`rw_mpas_convert --grid-label`) as the headline
+/// prints it: whitespace collapsed, [`GRID_LABEL_SPACING_TOKEN`] replaced by
+/// `spacing`, then held to the renderer's headline limits (at most
+/// [`GRID_LABEL_MAX_CHARS`] characters, no control character, no `|`).
+/// An error names what broke, so a caller's text is never silently dropped.
+pub fn caller_grid_label(text: &str, spacing: Option<&str>) -> Result<String, String> {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let label = if collapsed.contains(GRID_LABEL_SPACING_TOKEN) {
+        let spacing = spacing.ok_or_else(|| {
+            format!(
+                "--grid-label {collapsed:?} asks for {GRID_LABEL_SPACING_TOKEN}, and no cell the \
+                 window samples carries a usable spacing"
+            )
+        })?;
+        collapsed.replace(GRID_LABEL_SPACING_TOKEN, spacing)
+    } else {
+        collapsed
+    };
+    if label.is_empty() {
+        return Err("--grid-label needs a name".to_string());
+    }
+    if label.chars().count() > GRID_LABEL_MAX_CHARS {
+        return Err(format!(
+            "--grid-label {label:?} is longer than {GRID_LABEL_MAX_CHARS} characters, the plot headline's limit"
+        ));
+    }
+    if label.chars().any(|ch| ch.is_control() || ch == '|') {
+        return Err(format!(
+            "--grid-label {label:?} holds a control character or '|', the plot metadata row's separator"
+        ));
+    }
+    Ok(label)
+}
+
 impl Default for ConvertOptions {
     fn default() -> Self {
         ConvertOptions {
@@ -1303,6 +1396,42 @@ mod tests {
         assert_eq!(grid_label(Some("hex"), &uniform15).as_deref(), Some("hex 15 km"));
         assert_eq!(grid_label(None, &uniform15).as_deref(), Some("mesh 15 km"));
         assert_eq!(grid_label(Some("a|b"), &uniform15), None);
+    }
+
+    /// Drew, 2026-10-30: the site menu read `Core zoom · 8 → 38 km` over a
+    /// picture headlined `(hex 133-6.9 km)`, the whole mesh's range. A view's
+    /// label names the cells THAT picture samples, finest first.
+    #[test]
+    fn a_view_label_names_the_cells_its_picture_samples() {
+        // An 8 -> 128 km zoom globe: two distorted cells, the refined core,
+        // the transition, the background.
+        let mut zoom: Vec<f64> = vec![6_900.0, 133_000.0];
+        zoom.extend((0..400).map(|i| 7_900.0 + 0.5 * i as f64)); // core, median ~8.0 km
+        zoom.extend((0..60).map(|i| 12_000.0 + 1_000.0 * i as f64)); // transition 12-71 km
+        zoom.extend((0..200).map(|i| 126_000.0 + 10.0 * i as f64)); // background ~127 km
+        let core: Vec<usize> = (2..402).collect();
+        let core_to_corner: Vec<usize> = (2..402).chain(402..429).collect(); // reaches 38 km
+        let whole: Vec<usize> = (0..zoom.len()).collect();
+        assert_eq!(window_spacing_label(&zoom, &core).as_deref(), Some("8 km"));
+        assert_eq!(window_spacing_label(&zoom, &core_to_corner).as_deref(), Some("8-37 km"));
+        assert_eq!(window_spacing_label(&zoom, &whole).as_deref(), Some("8-127 km"));
+        // A uniform mesh is one value wherever the picture is.
+        let uniform: Vec<f64> = (0..100).map(|i| 115_000.0 + 100.0 * i as f64).collect();
+        assert_eq!(window_spacing_label(&uniform, &[0, 50, 99]).as_deref(), Some("120 km"));
+        assert_eq!(window_spacing_label(&uniform, &[]), None);
+        assert_eq!(window_spacing_label(&[f64::NAN, 3_000.0], &[0]), None);
+    }
+
+    #[test]
+    fn a_caller_grid_label_is_written_as_given_or_refused_by_name() {
+        assert_eq!(caller_grid_label("Core zoom 8-38 km", None).as_deref(), Ok("Core zoom 8-38 km"));
+        assert_eq!(caller_grid_label("  Core   zoom {spacing} ", Some("8-36 km")).as_deref(),
+                   Ok("Core zoom 8-36 km"));
+        assert!(caller_grid_label("Core zoom {spacing}", None).unwrap_err().contains("{spacing}"));
+        assert!(caller_grid_label("   ", None).unwrap_err().contains("needs a name"));
+        assert!(caller_grid_label("a|b", None).unwrap_err().contains("'|'"));
+        assert!(caller_grid_label(&"x".repeat(33), None).unwrap_err().contains("32 characters"));
+        assert_eq!(caller_grid_label(&"x".repeat(32), None).map(|l| l.len()), Ok(32));
     }
 
     #[test]

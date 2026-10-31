@@ -63,10 +63,31 @@ def test_declared_metadata_uses_the_option_defaults():
     # color_tables is declared with its default but left out of a default
     # request, so a table that does not name it writes the request it
     # always did (re-recorded 2026-10-03 with the key).
-    assert set(rows) == set(options) | {"color_tables"}
+    assert set(rows) == set(options) | {"color_tables", "band", "wavelength_mm"}
     assert rows["color_tables"]["default"] == "standard"
     assert {name: row["default"] for name, row in rows.items()
-            if name != "color_tables"} == options
+            if name not in {"color_tables", "band", "wavelength_mm"}} == options
+
+
+@pytest.mark.parametrize("band,wavelength", [("S",107.068735),("C",53.5),("X",33.3)])
+def test_band_metadata_and_wavelength_have_one_canonical_request(band,wavelength):
+    explicit = radar.SimulatedRadarOptions.from_mapping({"band":band})
+    wave = radar.SimulatedRadarOptions.from_mapping({"wavelength_mm":wavelength})
+    assert explicit == wave
+    site = radar.RadarSite("SIM1",35.,-97.,350.,wavelength_mm=wavelength)
+    assert site.to_mapping().get("band","S") == band
+    assert "band" not in radar.SimulatedRadarOptions.from_mapping({}).to_mapping()
+
+
+@pytest.mark.parametrize("options", [{"band":"Ku"},{"wavelength_mm":float("nan")},
+    {"wavelength_mm":True},{"wavelength_mm":54.},{"band":"C","wavelength_mm":33.3}])
+def test_band_requests_never_substitute_a_different_table(options):
+    with pytest.raises(ValueError,match="radar_"):
+        radar.SimulatedRadarOptions.from_mapping(options)
+
+
+def test_direct_wavelength_options_are_not_lost_during_serialization():
+    assert radar.SimulatedRadarOptions(enabled=True,wavelength_mm=53.5).to_mapping()["band"] == "C"
 
 
 def test_color_tables_selects_the_earlier_ppi_colours_and_stays_out_of_default_requests():

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from functools import lru_cache
-import hashlib
 import os
 from pathlib import Path
 
@@ -21,9 +20,11 @@ AUXILIARY_ASSET = ("wrf_44_auxiliary.dat",244520,"10b86addf627d81c7cd4a76efcf9d5
 
 
 def table_root(cfg):
-    value = getattr(cfg,"thompson_table_dir",None) or os.environ.get("GPUWM_THOMPSON_GENERATION_TABLE_ROOT")
-    if value is None:
-        raise ValueError("the selected Thompson generation needs its matching coefficient directory; set thompson_table_dir to the WRF run folder containing qr_acr_qgV3.dat, qr_acr_qsV2.dat and freezeH2O.dat")
+    from collections.abc import Mapping
+    value = (cfg.get("thompson_table_dir") if isinstance(cfg, Mapping)
+             else getattr(cfg,"thompson_table_dir",None)) or os.environ.get("GPUWM_THOMPSON_GENERATION_TABLE_ROOT")
+    if not value:
+        value = Path.home() / ".gpuwm/tables/thompson-wrf44"
     return Path(value).resolve()
 
 
@@ -34,13 +35,11 @@ def auxiliary_path():
 def _verify(path, expected):
     name, size, digest = expected
     if not path.is_file() or path.stat().st_size != size:
-        raise ValueError(f"Thompson generation table {path} must contain exactly {size} bytes; a different record layout changes the lookup indices")
-    actual = hashlib.sha256()
-    with path.open("rb") as stream:
-        while block := stream.read(8*1024*1024):
-            actual.update(block)
-    if actual.hexdigest() != digest:
-        raise ValueError(f"Thompson generation table {path} has SHA-256 {actual.hexdigest()}, expected {digest}; mixing generations changes the microphysics rates")
+        raise ValueError(f"Thompson generation table {path} must contain exactly {size} bytes; a different record layout changes the lookup indices; run gpuwm fetch-tables --schemes thompson44 --from DIR --replace-damaged")
+    from gpuwm.file_digest import sha256_file
+    actual = sha256_file(path)
+    if actual != digest:
+        raise ValueError(f"Thompson generation table {path} has SHA-256 {actual}, expected {digest}; mixing generations changes the microphysics rates; run gpuwm fetch-tables --schemes thompson44 --from DIR --replace-damaged")
     return {"filename":name,"bytes":size,"sha256":digest}
 
 
@@ -54,9 +53,11 @@ def _identity(version, root, signatures):
 
 
 def table_identity(cfg):
+    from gpuwm.tables import _ensure_for_load, _file_state
+    _ensure_for_load(cfg, fetch=False)
     root = table_root(cfg)
     paths = [root/row[0] for row in GENERATION_ASSETS[cfg.thompson_version]] + [auxiliary_path()]
-    signatures = tuple((str(p),p.stat().st_size,p.stat().st_mtime_ns) for p in paths)
+    signatures = tuple(_file_state(p) for p in paths)
     return _identity(cfg.thompson_version,str(root),signatures)
 
 TABLE_ARGUMENTS = (

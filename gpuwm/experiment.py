@@ -282,7 +282,7 @@ _SHARED_FORBIDDEN = {
 from gpuwm.sfire_config import FIRE_DOMAIN_FIELDS
 
 _DOMAIN_RUN_OVERRIDES = (
-    "hailcast_opt", "haildt",
+    "hailcast_opt", "haildt", "hailcast_version",
     "lightning_option", "lightning_dt", "lightning_start_seconds",
     "flashrate_factor", "iccg_method", "iccg_prescribed_num",
     "iccg_prescribed_den", "cellcount_method", "cldtop_adjustment", "do_radar_ref",
@@ -409,6 +409,7 @@ _DOMAIN_RUN_OVERRIDES = (
     # (gpuwm.core.terrain_drag); the GSL suite tapers itself with each
     # domain's grid length, so a column is the natural shape.
     "topo_wind", "gwd_opt",
+    "wind_farm_scheme", "wind_farm_table", "wind_farm_max_dx_m", "wind_farms", "windfarm_tke_factor",
     "history_interval2_s", "history_interval_change_s",
     "prec_acc_dt", "prec_acc_dt1", "gsd_diagnostics", "reset_interval1",
 ) + FIRE_DOMAIN_FIELDS
@@ -422,6 +423,8 @@ _DOMAIN_VERTICAL_KEYS = ("nz", "e_vert", "eta_levels", "p_top", "ztop",
 #: Rows for the [[domain]] keys no typed field declares
 #: (:mod:`gpuwm.config_keys`).
 _DOMAIN_KEY_ROWS = key_rows(
+    KeyRow("quicklook", "table", None,
+           "optional additional history cadence and variable selection"),
     KeyRow("static", "table", None, "per-domain terrain smooth_option, smooth_passes and smooth_precision"),
     KeyRow("start_time", "datetime", None,
            "when this nest starts, an offset-free TOML date-time inside "
@@ -1541,6 +1544,8 @@ class ExperimentConfig:
     #: integrating loop refuses an active block
     #: (:func:`refuse_unrouted_spectral_numerics`).
     spectral_numerics: object | None = None
+    #: Opt-in analysis relaxation, selected per domain. Absent means no nudging.
+    nudging: object | None = None
     #: WRF's &domains smooth_cg_topo (Registry.EM_COMMON:2301, scope 1,
     #: default .false.): domain 1's outer rows take the input model's
     #: terrain and ramp back to the high-resolution terrain over
@@ -1856,7 +1861,9 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
     source = str(authority.source)
     from gpuwm.config import _anchor_config_file_paths
     _anchor_config_file_paths(raw.get("shared", {}), authority.source,
-                              keys=("rrtmg_smoke_manifest",))
+                              keys=("rrtmg_smoke_manifest", "wind_farm_table", "wind_farms"))
+    for domain in raw.get("domain", []):
+        _anchor_config_file_paths(domain, authority.source, keys=("wind_farm_table", "wind_farms"))
     base_dir = Path(authority.source).parent
     experiment = build_experiment_from_config_tables(
         raw, source=source, base_dir=base_dir)
@@ -1907,6 +1914,10 @@ def build_experiment_from_config_tables(raw: dict, *, source: str,
 
     validate_config_source_top(raw, context=source)
     raw = copy.deepcopy(raw)
+    from gpuwm.config import _anchor_config_file_paths
+    for table in [raw.get("shared", {}), *raw.get("domain", [])]:
+        _anchor_config_file_paths(table, base_dir / "experiment.toml",
+                                  keys=("wind_farm_table", "wind_farms"))
     fetch_table = raw.pop("fetch", None)
     if fetch_table is not None:
         from gpuwm.fetch import validate_fetch_hints
@@ -3337,7 +3348,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     """Validate a parsed experiment TOML dict and build the config."""
     known_tables = ("experiment", "shared", "projection", "domain",
                     "relocation", "perturbation", "tiles", "devices", "output", "simulated_radar",
-                    "spectral_numerics", "physics_params", "radar_heating")
+                    "spectral_numerics", "nudging", "spectral_nudging", "physics_params", "radar_heating")
     # Setup lineage is provenance, with no atmosphere or follower controls.
     if isinstance(raw, dict) and "lineage" in raw:
         from gpuwm.cyclone_tracks import validate_lineage
@@ -4641,6 +4652,9 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                 "which is not implemented. Declare the spawn on the leaf, "
                 "or make the parent an ordinary domain.")
 
+    if any(getattr(dc.run, "umove", 0.0) or getattr(dc.run, "vmove", 0.0) for dc in domains):
+        if len(domains) != 1 or raw.get("relocation", {}).get("enabled", False):
+            raise ValueError("umove/vmove with nests or moving nests needs nested ground geometry translated each step")
     relocation = _build_relocation(raw, source, domains, run_seconds)
     from gpuwm.core.nest_lifecycle import validate_follow_tracks
     domains = validate_follow_tracks(domains, relocation, source)
@@ -4668,6 +4682,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         tiles=tiles, devices=devices, output=output, simulated_radar=simulated_radar,
         radar_heating=radar_heating,
         spectral_numerics=spectral_numerics,
+        nudging=_nudging_from_tables(raw, domains),
         auto_epssm=tuple(sorted(auto_epssm_ids)),
         physics_params=physics_params)
     from gpuwm.static.terrain_smoothing import refuse_moving_reach
@@ -5569,6 +5584,11 @@ def _public_config_value(value):
                          "between_history_add"):
                 document.pop(name, None)
         if isinstance(value, DomainConfig):
+            # A diagnostic filename is not an output control. Publishing
+            # the same quick-look selection beside a prepared bundle must
+            # preserve its identity when the authority moves there.
+            if document.get("quicklook_output") is not None:
+                document["quicklook_output"].pop("source", None)
             # The quick-look stream (run controls, 2.9.7) stays absent while a
             # domain has none, so a default document keeps its pre-feature
             # bytes (and every experiment fingerprint read from it).
@@ -5664,6 +5684,11 @@ def _public_config_value(value):
             drop_capability_campaign_keys(run_document)
             from gpuwm.checkpoint_identity import drop_default_output_controls
             drop_default_output_controls(run_document)
+            # Fitch wind farms (labs/windfarm, 2.9.11): farm physics off leaves
+            # the document as it was before the keys, by the checkpoint
+            # echo's rule (gpuwm.wind_table.drop_inert_config).
+            from gpuwm.wind_table import drop_inert_config as drop_inert_wind_farms
+            drop_inert_wind_farms(run_document)
             if run_document.get("ra_sw_eclipse", 1) == 1:
                 run_document.pop("ra_sw_eclipse", None)
             # tc/nest's fixed-frame archive (2.9.7) is read only on a nested
@@ -5700,9 +5725,21 @@ def domain_config_document(domain: DomainConfig) -> dict[str, object]:
     return _public_config_value(domain)
 
 
+def _nudging_from_tables(raw, domains):
+    if "nudging" in raw and "spectral_nudging" in raw:
+        raise ValueError("choose one [nudging] table; [spectral_nudging] is its legacy alias")
+    row = raw.get("nudging", raw.get("spectral_nudging"))
+    if row is None:
+        return None
+    from gpuwm.spectral_nudging.config import from_mapping
+    return from_mapping(row, tuple(dc.grid_id for dc in domains))
+
+
 def experiment_config_document(exp: ExperimentConfig) -> dict[str, object]:
     """Resolved experiment fields, preserving the domain document contract."""
     document = _public_config_value(exp)
+    if getattr(exp, 'nudging', None) is None:
+        document.pop("nudging", None)
     # A newly introduced execution control stays absent when off, so default
     # public snapshots and plans retain their pre-feature bytes.
     if exp.physics_params is None:

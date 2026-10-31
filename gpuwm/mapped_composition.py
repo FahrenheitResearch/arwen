@@ -2003,7 +2003,11 @@ class _RegularSnapshots(_ABCSequence):
         return self._leading_positions("decoded_through")
 
     def posted_positions(self) -> int:
-        """How many leading snapshots read with no wait for a lead (all, unless as posted)."""
+        """How many leading snapshots the source has posted now (all, unless as posted).
+
+        A live window's later leads are not posted yet; an archived window's
+        are all posted, whether or not the fetch has moved them yet.
+        """
 
         return self._leading_positions("posted_through")
 
@@ -3504,7 +3508,10 @@ class PostedFrames(_ABCSequence):
         return len(self) if self._decoded is None else int(self._decoded())
 
     def posted_through(self) -> int:
-        """How many leading times have posted now: read with no wait for a later lead."""
+        """How many leading times the source has posted now (its posting schedule).
+
+        Not how many this fetch has moved: reading one may wait for its lead.
+        """
 
         return len(self) if self._posted is None else int(self._posted())
 

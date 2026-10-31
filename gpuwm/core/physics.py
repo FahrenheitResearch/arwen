@@ -85,7 +85,8 @@ from gpuwm.core import (cumulus_clock, health_ledger, noah_forcing,
                         noah_sfcdiags, surface_humidity, tendency_coupling)
 from gpuwm.core.noah import (_F2D as NOAH_FIELDS_2D,
                              _F3D as NOAH_FIELDS_3D,
-                             launch_noah, load_tables, pack_params)
+                             launch_noah, load_tables, noah_chklowq_myj,
+                             pack_params)
 from gpuwm.core.microphysics import (
     MicrophysicsDiagnostics,
     validate_surface_diagnostics,
@@ -1869,6 +1870,9 @@ def _compose_three(out, pbl, radiation, cumulus):
 
 def _prepare_atmosphere(state: DomainState) -> dict[str, cp.ndarray]:
     """CuPy transcription of WRF ``phy_prep`` fields used in Phase 3."""
+    if getattr(state, "_moving_frame_velocity", None):
+        from gpuwm.moving_frame import initialize_moving_frame
+        initialize_moving_frame(state)
     supplied = getattr(state, "prepared_physics_atmosphere", None)
     if supplied is not None:
         # A column state that already lives on the physics grid (A-grid
@@ -1893,6 +1897,9 @@ def _prepare_atmosphere(state: DomainState) -> dict[str, cp.ndarray]:
                                     + state.u[:, :, 1:]))
     v = cp.ascontiguousarray(0.5 * (state.v[:, :-1, :]
                                     + state.v[:, 1:, :]))
+    if getattr(state, "_moving_frame_velocity", None):
+        from gpuwm.moving_frame import ground_relative_components
+        u, v = ground_relative_components(state, u, v)
 
     phb = state.phb
     phb3 = phb[:, None, None] if phb.ndim == 1 else phb
@@ -2001,6 +2008,9 @@ def _prepare_atmosphere_fused(state: DomainState):
                                     + state.u[:, :, 1:]))
     v = cp.ascontiguousarray(0.5 * (state.v[:, :-1, :]
                                     + state.v[:, 1:, :]))
+    if getattr(state, "_moving_frame_velocity", None):
+        from gpuwm.moving_frame import ground_relative_components
+        u, v = ground_relative_components(state, u, v)
     phb = state.phb
     phb3 = phb[:, None, None] if phb.ndim == 1 else phb
     z_interface = cp.ascontiguousarray((phb3 + state.php) / DTYPE(c.G))
@@ -2135,6 +2145,7 @@ class PhysicsDriver:
     #: WRF's topo_wind or gwd_opt (initialize_physics attaches it); ``None``
     #: keeps every other domain's PBL call untouched.
     terrain_drag: object | None = None
+    wind_farm: object | None = None
 
     #: CLASS DEFAULTS for the three bookkeeping slots the hot path reads
     #: every step, on exactly the argument the ``sase_active`` default
@@ -2202,6 +2213,8 @@ class PhysicsDriver:
         # WRF's topo_wind / gwd_opt; initialize_physics attaches it where
         # either is on (restart: rebuilt from the prepared statics).
         self.terrain_drag = None
+        self.wind_farm = None
+        self.wind_farm_detection = None
         # WRF's swint_opt = 1 carrier (gpuwm.core.swint); initialize_physics
         # attaches it where the config asks for it (restart: rebuilt; its
         # eleven state fields ride ``fields``).
@@ -2591,6 +2604,10 @@ class PhysicsDriver:
         self.noah_usemonalb = bool(cfg.usemonalb)
         self.noah_rdlai2d = bool(cfg.rdlai2d)
         self.noah_opt_thcnd = int(cfg.opt_thcnd)
+        # lsm's ``myj`` argument (module_surface_driver.F:1899-1900): the
+        # Eta (MYJ) or QNSE surface layer.  It selects the CHKLOWQ arm
+        # (gpuwm.core.noah.noah_chklowq_myj).
+        self.noah_myj = int(cfg.sf_sfclay_physics) in (MYJ_SFCLAY_SCHEME, 4)
         # seaice_noah's model step (the surface driver hands it DT where it
         # hands lsm DTBL) and its seaice_albedo_default.
         self.noah_seaice_dt = float(cfg.dt)
@@ -3946,9 +3963,15 @@ class PhysicsDriver:
           post-call block (:2226-2231): ``ustm = ust``, ``wspd =
           max(sqrt(u1^2+v1^2), 0.001)``, ``ch = chs``.
         * ``Z0BASE`` is the background roughness the Zilitinkevich fix
-          reads (module_sf_myjsfc.F:733).  It is a static field seeded from
-          the cold-start ZNT in :func:`initialize_physics`, never the
-          working ZNT the sea branch overwrites every iteration.
+          reads (module_sf_myjsfc.F:733).  WRF passes the Registry's ``Z0``
+          (module_surface_driver.F:2215, ``ust,znt,z0,...``): landuse_init's
+          table roughness on the first step, then Noah's Z0BRD, which the
+          LSM writes back into ``Z0`` every call (module_sf_noahdrv.F:1227).
+          So it is the live ``fields["z0"]``, never the working ZNT the sea
+          branch overwrites every iteration.  Until 2026-10-29 gpuwm bound a
+          static copy of the cold-start ZNT here; on the WRF-JAX CONUS-suite
+          case every land column's step-2 thermal roughness then differed
+          from WRF's (tools/myj_wrf461_capture, replay receipt).
         * ``PBLH`` is MYJSFC's own TKE scan (:263-277), not MIXLEN's
           (module_bl_myjpbl.F:834).  The two use different interfaces on
           purpose and WRF lets the surface layer's value stand until the
@@ -3968,7 +3991,7 @@ class PhysicsDriver:
             "p1": atmosphere["pressure"][0],
             "psfc": atmosphere["p_interface"][0],
             "tsk": f["tsk"], "xland": f["xland"], "mavail": f["mavail"],
-            "z0base": f["z0base"],
+            "z0base": f["z0"],
             # ZINT(KTE+1)=HT (module_sf_myjsfc.F:165): MYJSFC's interface
             # heights start at the terrain height and PBLH/ZSL are their
             # differences, so the float32 words depend on it
@@ -4333,6 +4356,8 @@ class PhysicsDriver:
                     itimestep=itimestep,
                     urban=(None if coupler is None
                            else coupler.noah_kernel_args()))
+        if self.noah_myj:
+            noah_chklowq_myj(f)
         # Sea ice after lsm, as the surface driver orders them, and before
         # the urban coupling, which reads the surface flux of every column.
         self._run_noah_seaice(cfg, use_scheme_sr, xice_threshold=0.5)
@@ -4826,6 +4851,8 @@ class PhysicsDriver:
                 "bl_mynn_cloud_tendency_form": cfg.bl_mynn_cloud_tendency_form}
                if cfg.bl_mynn_version != "wrf_461" else {}))
         validate_mynn_tendencies(out)
+        if self.wind_farm is not None:
+            self.wind_farm.apply_mynn(atmosphere, f, out, step_seconds=self.bldt_seconds)
         self.pbl_tendencies = self._couple_pbl_slot(
             cfg, out, atmosphere=atmosphere)
         if mixing_qn:
@@ -5838,6 +5865,9 @@ class PhysicsDriver:
                                         + state.u[:, :, 1:]))
         v = cp.ascontiguousarray(0.5 * (state.v[:, :-1, :]
                                         + state.v[:, 1:, :]))
+        if getattr(state, "_moving_frame_velocity", None):
+            from gpuwm.moving_frame import ground_relative_components
+            u, v = ground_relative_components(state, u, v)
         phb = state.phb
         phb3 = phb[:, None, None] if phb.ndim == 1 else phb
         z_interface = (phb3 + state.php) / DTYPE(c.G)
@@ -6294,6 +6324,8 @@ class PhysicsDriver:
             self._wrf_rthraten *= mass
             self._wrf_rthraten_coupled = True
         self._compose_tendencies(cfg)
+        if self.wind_farm is not None and self.wind_farm.scheme == "gad":
+            self.wind_farm.apply_gad(atmosphere, state, cfg, self.tendencies)
         # WRF advances the cumulus precipitation/NCA clock before its later
         # microphysics call (solve_em.F:3558-3571 vs :3689-3720).  Running it
         # after compose preserves this step's pre-expiry RK forcing, while
@@ -6737,6 +6769,27 @@ def initialize_physics(
     :func:`gpuwm.physics_compat.radiation_off_land_surface_refusal` read
     at load -- two separate claims, two separate tokens.
     """
+    # Missing or poisoned lookup files must fail before a downstream caller
+    # allocates a driver or advances a state with another scheme's science.
+    from gpuwm.tables import _ensure_for_load as ensure
+    from dataclasses import replace
+    table_cfg = cfg
+    if radiation is not None:
+        table_cfg = replace(table_cfg, ra_physics=0, ra_lw_physics=0, ra_sw_physics=0)
+    if noah_params is not None:
+        table_cfg = replace(table_cfg, sf_surface_physics=0)
+    if cumulus is not None:
+        table_cfg = replace(table_cfg, cu_physics=0)
+    ensure(table_cfg)
+    if getattr(cfg, "umove", 0.0) or getattr(cfg, "vmove", 0.0):
+        from gpuwm.moving_frame import initialize_moving_frame, validate_uniform_surface
+        validate_uniform_surface(landmask=landmask, tsk=tsk, ivgtyp=ivgtyp,
+                                 isltyp=isltyp, vegfra=vegfra, tmn=tmn,
+                                 xice=xice, snow=snow, snow_depth=snow_depth,
+                                 sst=sst, xland=xland, mavail=mavail)
+        if landuse is not None or landusef is not None or terrain_drag_static is not None:
+            raise ValueError("umove/vmove with real-data land use or terrain drag needs ground geography translated each step")
+        initialize_moving_frame(state, cfg)
     if not physics_driver_required(cfg) and cam_ozone is None:
         raise ValueError("initialize_physics requires at least one enabled "
                          "physics scheme")
@@ -7073,21 +7126,12 @@ def initialize_physics(
         # its VRAM accounting for nothing.  Every one is a WRF Registry
         # field cold-started at zero except the three noted.  The names
         # are MYJ_SFCLAY_FIELDS_2D, the tuple the VRAM estimate prices.
+        # MYJSFC's Z0BASE is no field of its own: WRF binds the Registry's
+        # Z0 (module_surface_driver.F:2215), the same ``fields["z0"]`` the
+        # land-use init seeds and Noah rewrites as Z0BRD every call
+        # (_run_myj_sfclay).
         for name in MYJ_SFCLAY_FIELDS_2D:
-            if name in f:
-                continue
-            if name == "z0base":
-                # Z0BASE is the BACKGROUND roughness the Zilitinkevich
-                # thermal-roughness fix reads (module_sf_myjsfc.F:733).
-                # WRF fills it from the land-use table at initialization
-                # and never lets the surface layer touch it; the working
-                # ZNT, which the sea branch overwrites every iteration from
-                # u*, is a different field.  Seeding it from the cold-start
-                # ZNT is the closest gpuwm gets without a Z0BASE ingest,
-                # and it is exactly what WRF's own MYJSFCINIT leaves behind
-                # on a restart (:1128-1161 only refills Z0 under NMM).
-                f[name] = cp.ascontiguousarray(f["znt"].copy())
-            else:
+            if name not in f:
                 f[name] = cp.zeros(shape, dtype=DTYPE)
         # module_sf_myjsfc.F:186-203 seeds USTAR=0.1 on step one; the
         # kernel applies it per column, so the allocation just has to be a
@@ -7645,6 +7689,17 @@ def initialize_physics(
     if int(getattr(cfg, "topo_wind", 0) or 0)             or int(getattr(cfg, "gwd_opt", 0) or 0):
         driver.terrain_drag = _attach_terrain_drag(
             state, cfg, f, terrain_drag_static)
+    if cfg.wind_farm_scheme != "off":
+        if getattr(state, "_tile_buffer", False) or state.p.shape != (cfg.nz, cfg.ny, cfg.nx):
+            raise ValueError("wind farms currently require a resident whole domain; tiled/ranked turbine ownership is not implemented")
+        from gpuwm.core.wind_farm import attach_wind_farm
+        driver.wind_farm, driver.wind_farm_detection = attach_wind_farm(cfg, state.p.shape,
+            latitude=radiation_latitude, longitude=radiation_longitude,
+            msf=state.msft if state.has_msf else None,
+            z_interface=((state.phb[:, None, None] if state.phb.ndim == 1 else state.phb)
+                         + state.php) / DTYPE(c.G))
+        import json as _wind_json
+        print("[wind-farm detection] " + _wind_json.dumps(driver.wind_farm_detection), flush=True)
     state.physics = driver
     # WRF's mp_init, ONCE per domain, exactly where phy_init runs it:
     # module_physics_init.F:1635 calls mp_init as the last physics
@@ -7734,6 +7789,10 @@ def initialize_physics(
     attach_atmosphere(driver, cfg,
         latitude=radiation_latitude if radiation_latitude is not None else noahmp_latitude,
         longitude=radiation_longitude if radiation_longitude is not None else noahmp_longitude)
+    if driver.wind_farm is not None:
+        # Initial-time power and hub wind are diagnostics of the initial state.
+        # Sampling applies no momentum or TKE tendency before the first step.
+        driver.wind_farm.sample(_prepare_atmosphere(state), f)
     return driver
 
 

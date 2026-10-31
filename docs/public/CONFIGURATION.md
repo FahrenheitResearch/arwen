@@ -349,6 +349,24 @@ the Davies boundary clock resets at a top-of-step seam. Five-minute forcing is
 therefore valid for a 60-second d01 step; 310-second forcing is not
 (`310/60 = 31/6` steps). History cadence is independent.
 
+### Constant moving frame
+
+Set `umove` and `vmove` (m/s, default `0.0`) in `[shared]`, or pass them
+to `RunConfig`, to translate a flat idealized Cartesian domain at constant
+speed. Initial and boundary winds are supplied ground-relative; the model
+subtracts the frame once for transport, and surface physics and history
+use ground-relative winds. Both zero skips the new path entirely. History
+records the speed and ground offset at each output time.
+
+Terrain, real-data land fields, nests, moving nests and Coriolis are
+refused: ground geometry would need translation each step, and Coriolis
+would need a consistently shifted geostrophic balance. Use a uniform
+prescribed surface; evolving soil, urban, lake, ocean and fire fields also
+need ground translation. The real-data WRF namelist importer accepts
+explicit zero `&dynamics umove/vmove` and refuses nonzero values for the
+same geography reason. See [moving-frame.md](../moving-frame.md) for the
+direct Python API, boundary conversion and output attributes.
+
 ### Dynamics
 
 Shared across domains unless marked per-domain. Every key below is a
@@ -357,7 +375,7 @@ consumed `RunConfig` field -- the knob-parity battery
 consuming kernel/module rather than being decorative -- and every one
 is importable from a WRF namelist.
 
-**Which keys a `[[domain]]` table may override.** Exactly these 261,
+**Which keys a `[[domain]]` table may override.** Exactly these 267,
 and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
 
     lightning_option  lightning_dt  lightning_start_seconds  flashrate_factor
@@ -422,11 +440,14 @@ and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
     fire_lsm_band_ngp  fire_lsm_zcoupling  fire_lsm_zcoupling_ref  fire_tracer_smoke
     fire_viscosity_bg  fire_viscosity_band  fire_viscosity_ngp  fire_slope_factor
     fuel_crosswalk  sr_x  sr_y  fire_static  fire_fuel_namelist  fire_smoke
-    hailcast_opt  haildt  lake_state_source  lake_state_path
+    hailcast_opt  haildt  hailcast_version  lake_state_source  lake_state_path
     lake_state_accept_licence
+    wind_farm_scheme  wind_farms  wind_farm_table  windfarm_tke_factor  wind_farm_max_dx_m
 
 `hailcast_opt` and `haildt` select the GPU WRF HAILCAST hail diameter per
-domain (see the physics table below). `lake_state_source` picks the lake
+domain (see the physics table below), and `hailcast_version` its stone
+model: `wrf_39_noaa` (default, the HAILCAST in NOAA's operational HRRR v4)
+or `wrf_461` (WRF v4.6.1's). `lake_state_source` picks the lake
 initial-state row from `gpuwm/data/surface_obs/lake-state-sources.v1.toml`
 (`auto` and `forcing` are the two built-in choices); a research-only row
 also needs `lake_state_path`, its acquired CF NetCDF file, and
@@ -1300,7 +1321,7 @@ keeps the count of keys consumed with no record at zero.
 | `&chem` with `chem_opt` on | mapped onto ArWen's chemistry (`chem_sets`, `chem_sources`, the carried `&chem` keys) or refused key by key; never run with no chemistry |
 | a `&stoch` selector with no consumer | refused, naming the WRF operation that would be lost |
 | `fractional_seaice = 1` under a non-RUC land surface | declared divergence: whole-cell ice at XICE >= 0.5; differs only where the sea-ice fraction is strictly between 0.02 and 1 |
-| `hailcast_opt = 1` | GPU WRF HAILCAST and PSD hail diameter; automatic at spacing up to 4 km by default. `haildt` is seconds (60 by default, 0 means every step); [hail diameter products](HAIL-DIAMETER.md) |
+| `hailcast_opt = 1` | GPU WRF HAILCAST and PSD hail diameter; automatic at spacing up to 4 km by default. `haildt` is seconds (60 by default, 0 means every step); `hailcast_version` picks operational HRRR v4's stone model (`wrf_39_noaa`, default) or WRF v4.6.1's (`wrf_461`); [hail diameter products](HAIL-DIAMETER.md) |
 | `dfi_opt` other than 0 | refused: WOOF has no digital filter, so every hour would integrate from a different initial state (a declared divergence until 2026-10-12) |
 
 The unmodified operational 3 km namelist (NOAA-EMC/HRRR v4.1.21

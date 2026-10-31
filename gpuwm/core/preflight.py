@@ -2678,6 +2678,9 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # RTX 5070 Ti production loaders, 2026-10-18, both numerics modes.
     "nextgen_cfe": 0, "nextgen_reservoirs": 0,
     "nextgen_inundation": 0, "nextgen_terrain": 56,
+    # The Fitch wind-farm unit (labs/windfarm, 2.9.11): RTX 4090 sm_89,
+    # NVRTC 12.9.86 and 13.4.92, fast and strict, 2026-10-30.
+    "wind_farm": 56,
 }
 
 #: The readings the ceiling above is made of, each naming its box, its
@@ -7319,16 +7322,48 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
 )
 
 
+_scratch_lifetime_index = (None, None)
+
+
+def _index_scratch_lifetimes(audit):
+    """Index literal rules once; memoize the much smaller prefix search.
+
+    Domain sizing repeatedly prices the same slot names at different shapes.
+    Scanning every pattern of every row for each request made that metadata
+    walk the wizard's single-core tail. The audit is immutable; replacing it
+    (including in an audit test) builds a new index and a new lookup cache.
+    Row numbers, rather than patterns, preserve the unique-ROW overlap rule.
+    """
+    from functools import lru_cache
+
+    exact, prefixes = {}, []
+    for index, row in enumerate(audit):
+        for pattern in row.patterns:
+            if pattern.endswith("*"):
+                prefixes.append((pattern[:-1], index))
+            else:
+                exact.setdefault(pattern, set()).add(index)
+
+    @lru_cache(maxsize=8192)
+    def lookup(slot):
+        matches = set(exact.get(slot, ()))
+        matches.update(index for prefix, index in prefixes if slot.startswith(prefix))
+        if len(matches) > 1:
+            raise RuntimeError(f"scratch lifetime audit overlaps for {slot!r}")
+        return audit[next(iter(matches))] if matches else None
+
+    return lookup
+
+
 def scratch_slot_lifetime(slot: str) -> ScratchSlotLifetime | None:
     """Return the unique audit row for ``slot``, or ``None`` if unclassified."""
-    matches = []
-    for row in SCRATCH_SLOT_LIFETIME_AUDIT:
-        if any((slot.startswith(pattern[:-1]) if pattern.endswith("*")
-                else slot == pattern) for pattern in row.patterns):
-            matches.append(row)
-    if len(matches) > 1:
-        raise RuntimeError(f"scratch lifetime audit overlaps for {slot!r}")
-    return matches[0] if matches else None
+    global _scratch_lifetime_index
+    audit, lookup = _scratch_lifetime_index
+    if audit is not SCRATCH_SLOT_LIFETIME_AUDIT:
+        audit = SCRATCH_SLOT_LIFETIME_AUDIT
+        lookup = _index_scratch_lifetimes(audit)
+        _scratch_lifetime_index = audit, lookup
+    return lookup(slot)
 
 
 def scratch_slot_uses_arena(slot: str) -> bool:

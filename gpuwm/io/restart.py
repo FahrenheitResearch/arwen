@@ -194,8 +194,8 @@ from gpuwm.state_serialization_contract import (
 #: identity mismatch that reads as "your configuration changed" (ENG-010,
 #: ENG-011).  The reader retains a byte-equality-checked v2 array-layout shim,
 #: but an old unbound v2 file is rejected because the v4 identity header is
-#: mandatory.
-RESTART_FORMAT_VERSION = 6
+#: mandatory. v7 preserves the independent MF_VX_INV input words.
+RESTART_FORMAT_VERSION = 7
 READABLE_RESTART_FORMAT_VERSIONS = frozenset({2, RESTART_FORMAT_VERSION})
 
 #: Format versions this build recognises and refuses with the reason, so an
@@ -204,6 +204,8 @@ READABLE_RESTART_FORMAT_VERSIONS = frozenset({2, RESTART_FORMAT_VERSION})
 #: fields.  A declared break, not a migration: the members a v6 file adds
 #: are real state a v5 file never had (see the v6 note above).
 RETIRED_RESTART_FORMAT_VERSIONS = {
+    6: ("checkpoint format 6 lacks the independently stored MF_VX_INV map inverse; "
+        "restart from the initial conditions or finish on the original build"),
     5: ("2.6.5 checkpoint format 5: 2.7.0 adds the adaptive-timestep and "
         "eta_levels configuration echo, the fields/ustm surface-layer member "
         "and the held/gf_rthblten, held/gf_rqvblten cumulus forcing members; "
@@ -507,6 +509,9 @@ STATE_REBUILT_ATTRS = frozenset({
 #: Machinery: handled by dedicated sections (scratch, physics, clock) or
 #: rebuilt by attach/prepare (LBC device mirrors, host caches).
 STATE_INFRA_ATTRS = frozenset({
+    # Rebuilt from bound analyses and the restored model clock. Held
+    # tendencies are separate serialized fields when fgdt exceeds a step.
+    "_spectral_nudging_graph", "_spectral_nudging_owner", "_spectral_nudging_interval",
     # A validity marker for the stage-local acoustic mass buffer, not a
     # prognostic. Stage entry rebuilds it; a fresh standalone caller seeds
     # the buffer when the marker is absent. Checkpoints are step-boundary.
@@ -519,6 +524,8 @@ STATE_INFRA_ATTRS = frozenset({
     # names/bytes, not this preparation selector, own forecast forcing and
     # are already covered by setup_fingerprint/lateral prefix identity.
     "_external_scalar_boundary_fields",
+    # Config binds speed; restored U/V already use this frame (see restore).
+    "_moving_frame_velocity", "_moving_frame_initialized",
     "_scratch", "_scratch_arena", "_phb_host", "_dz_min",
     "_host_setup_state",
     # Strict mode's record of the prepared base theta
@@ -1183,6 +1190,10 @@ DRIVER_CHECKPOINT_ONLY_ATTRS = frozenset({"olr", "cldfra", "radiation_flux_diagn
 DRIVER_HELD_FORCING_ATTRS = frozenset({"gf_rthblten", "gf_rqvblten"})
 
 DRIVER_REBUILT_ATTRS = frozenset({
+    "wind_farm",  # Device tables and diagnostics rebuilt; QKE carriers persist.
+    # Startup inventory/geometry decision, rebuilt from configuration and statics.
+    # This receipt owns no evolving numerical state.
+    "wind_farm_detection",
     # Run-local CUDA events and elapsed-time counters, recreated when hydro
     # attaches to the resumed parent. Scientific hydro state is checkpointed
     # separately; carrying timing events across processes is invalid.
@@ -1289,7 +1300,7 @@ DRIVER_REBUILT_ATTRS = frozenset({
     "radiation_active", "cu_physics", "mp_physics", "surface_enabled",
     # Noah LSM option selectors: plain cfg-derived scalars reconstructed at
     # driver init, exactly like the radiation and cumulus selectors above.
-    "noah_usemonalb", "noah_rdlai2d", "noah_opt_thcnd",
+    "noah_usemonalb", "noah_rdlai2d", "noah_opt_thcnd", "noah_myj",
     # seaice_noah's model step and albedo (cfg scalars, rebuilt at init) and
     # its once-per-process snow-density read-back latch: a resumed process
     # reads the carried snowpack back once more, which is the point.
@@ -2677,7 +2688,7 @@ def _packed_parameters_identity(params, *, label: str,
 #: bytes it always had.  Either way the digest cannot tell two values of
 #: the switch apart, which is all the restart walk needs.
 _DIGEST_DROPPED_DIAGNOSTIC_FIELDS = frozenset(
-    {"hailcast_opt", "haildt", "nwp_diagnostics", "tke_budget", "sase_flux_diag", "surface_energy_diag",
+    {"hailcast_opt", "haildt", "hailcast_version", "nwp_diagnostics", "tke_budget", "sase_flux_diag", "surface_energy_diag",
      # Correct mode WB1: output-only and on by default from 2.9.0, so it is
      # dropped rather than held at a default no earlier digest carried.
      "thompson_cloud_surface_booking"})
@@ -2733,6 +2744,8 @@ def _drop_inert_mosaic(values: dict) -> None:
 def _mosaic_checkpoint_config(config: Mapping) -> dict:
     """Keep pre-mosaic headers and comparisons byte-identical when off."""
     values = dict(config)
+    from gpuwm.wind_table import drop_inert_config
+    drop_inert_config(values)
     if values.get("sf_surface_physics", 0) != 4:
         values.pop("noahmp_snow_age", None)
     if not values.get("sf_lake_physics", 0):
@@ -2810,6 +2823,8 @@ def _drop_default_off_run_keys(values: dict) -> None:
     so every writer drops each key the same way.  A new default-off field
     joins this list, naming the commit that added it.
     """
+    from gpuwm.wind_table import drop_inert_config
+    drop_inert_config(values)
     from gpuwm.config import drop_inert_g3_fields
     _drop_inert_nest_archive(values)
     drop_inert_g3_fields(values)
@@ -4311,6 +4326,9 @@ def _restart_payload(path, state, cfg, *, run_trackers=None,
                      sealed_forcing_extension: bool = False,
                      preserved_forcing_prefix: bool = False,
                      owned: bool = False, staging=None):
+    if getattr(cfg, "umove", 0.0) or getattr(cfg, "vmove", 0.0):
+        from gpuwm.moving_frame import initialize_moving_frame
+        initialize_moving_frame(state, cfg)
     if cfg.diff_opt == 1:
         from gpuwm.core.dycore import initialize_coordinate_reference
         initialize_coordinate_reference(state, cfg)
@@ -8078,6 +8096,10 @@ def _apply_validated_restart(validated: _ValidatedRestart,
     normalize_spec_zone_ring_after_restore(
         state, cfg, relocated=_grid_relocated(
             header, cfg, parent_by_grid=parent_by_grid))
+    if getattr(cfg, "umove", 0.0) or getattr(cfg, "vmove", 0.0):
+        from gpuwm.moving_frame import frame_velocity
+        state._moving_frame_velocity = frame_velocity(cfg)
+        state._moving_frame_initialized = True
     state.elapsed_seconds = elapsed
     return RestartInfo(elapsed_seconds=elapsed,
                        run_trackers=header.get("run_trackers"),

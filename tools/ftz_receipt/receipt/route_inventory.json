@@ -9,11 +9,11 @@
     "cupy.ReductionKernel",
     "cupy.cuda.compiler.compile_using_nvrtc"
   ],
-  "site_count": 356,
+  "site_count": 358,
   "site_count_by_kind": {
     "cupy.ElementwiseKernel": 30,
     "cupy.RawKernel": 43,
-    "cupy.RawModule": 198,
+    "cupy.RawModule": 200,
     "cupy.ReductionKernel": 11,
     "cupy.cuda.compiler.compile_using_nvrtc": 74
   },
@@ -24,7 +24,7 @@
     "package": {
       "cupy.ElementwiseKernel": 20,
       "cupy.RawKernel": 6,
-      "cupy.RawModule": 62,
+      "cupy.RawModule": 64,
       "cupy.ReductionKernel": 7,
       "cupy.cuda.compiler.compile_using_nvrtc": 40
     },
@@ -248,7 +248,7 @@
     },
     {
       "file": "gpuwm/core/dycore.py",
-      "line": 302,
+      "line": 306,
       "column": 11,
       "surface": "package",
       "constructor": "cp.ElementwiseKernel",
@@ -268,7 +268,7 @@
     },
     {
       "file": "gpuwm/core/dycore.py",
-      "line": 333,
+      "line": 337,
       "column": 11,
       "surface": "package",
       "constructor": "cp.ElementwiseKernel",
@@ -556,7 +556,7 @@
     },
     {
       "file": "gpuwm/core/kf.py",
-      "line": 345,
+      "line": 347,
       "column": 20,
       "surface": "package",
       "constructor": "compiler.compile_using_nvrtc",
@@ -788,7 +788,7 @@
     },
     {
       "file": "gpuwm/core/noah_mosaic.py",
-      "line": 535,
+      "line": 536,
       "column": 13,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -804,7 +804,7 @@
     },
     {
       "file": "gpuwm/core/noah_mosaic.py",
-      "line": 563,
+      "line": 564,
       "column": 13,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -956,7 +956,7 @@
     },
     {
       "file": "gpuwm/core/physics.py",
-      "line": 1820,
+      "line": 1821,
       "column": 17,
       "surface": "package",
       "constructor": "cp.ElementwiseKernel",
@@ -972,7 +972,7 @@
     },
     {
       "file": "gpuwm/core/physics.py",
-      "line": 1835,
+      "line": 1836,
       "column": 17,
       "surface": "package",
       "constructor": "cp.ElementwiseKernel",
@@ -988,7 +988,7 @@
     },
     {
       "file": "gpuwm/core/physics.py",
-      "line": 1858,
+      "line": 1859,
       "column": 21,
       "surface": "package",
       "constructor": "cp.ElementwiseKernel",
@@ -1052,7 +1052,7 @@
     },
     {
       "file": "gpuwm/core/rrtmg_legacy.py",
-      "line": 1081,
+      "line": 1088,
       "column": 24,
       "surface": "package",
       "constructor": "_cc.compile_using_nvrtc",
@@ -1134,7 +1134,7 @@
     },
     {
       "file": "gpuwm/core/rrtmg_sw.py",
-      "line": 3001,
+      "line": 3007,
       "column": 24,
       "surface": "package",
       "constructor": "_cc.compile_using_nvrtc",
@@ -2305,6 +2305,46 @@
       "text": "self.module = cp.RawModule(code=source, options=(\"--std=c++17\", f\"-DWAVES_DIRECTIONS={self.nd}\"))"
     },
     {
+      "file": "gpuwm/spectral_nudging/forecast.py",
+      "line": 54,
+      "column": 13,
+      "surface": "package",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "attach",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "('--std=c++11',)",
+      "options": [
+        "--std=c++11"
+      ],
+      "options_element_expressions": [
+        "'--std=c++11'"
+      ],
+      "options_are_literal": true,
+      "text": "module = cp.RawModule(code=source, options=('--std=c++11',))"
+    },
+    {
+      "file": "gpuwm/spectral_nudging/gpu.py",
+      "line": 83,
+      "column": 22,
+      "surface": "package",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "__init__",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "(\"--std=c++11\",)",
+      "options": [
+        "--std=c++11"
+      ],
+      "options_element_expressions": [
+        "\"--std=c++11\""
+      ],
+      "options_are_literal": true,
+      "text": "self.module = cp.RawModule(code=source, options=(\"--std=c++11\",))"
+    },
+    {
       "file": "gpuwm/tc_accumulator.py",
       "line": 287,
       "column": 13,
@@ -3320,7 +3360,7 @@
     },
     {
       "file": "tests/test_mp8_frozen.py",
-      "line": 3064,
+      "line": 3090,
       "column": 8,
       "surface": "tests",
       "constructor": "cp.RawModule",

@@ -4142,6 +4142,11 @@ def run_prepared_tree(
 
     from gpuwm.ensemble.runtime_context import bind_current_member_model
     bind_current_member_model(model)
+    if getattr(exp, 'nudging', None) is not None:
+        from gpuwm.spectral_nudging.prepared import allocate_held_tendencies, selected, validate_fixed_domains
+        validate_fixed_domains(exp)
+        for grid_id, node in nodes.items():
+            allocate_held_tendencies(node.state, node.cfg.run, selected(exp, grid_id))
     restart_info = None
     if restart is not None:
         checkpoint = validate_manifest_checkpoint(Path(restart))
@@ -4665,6 +4670,10 @@ def run_prepared_tree(
     attach_step_forcings = getattr(initialization, "attach_step_forcings", None)
     step_forcings = (None if attach_step_forcings is None
                      else attach_step_forcings(nodes, steppers))
+    nudging_forcings = None
+    if not already_complete and getattr(exp, 'nudging', None) is not None:
+        from gpuwm.spectral_nudging.prepared import PreparedTreeNudging
+        nudging_forcings = PreparedTreeNudging(model, nodes, inputs, steppers)
     try:
         memory_watch.start()
         if already_complete:
@@ -4746,6 +4755,8 @@ def run_prepared_tree(
         memory_watch.stop()
         if step_forcings is not None:
             step_forcings.detach()
+        if nudging_forcings is not None:
+            nudging_forcings.detach()
     if step_forcings is not None and not already_complete:
         step_forcings.require_applied()
     runtime._finalizing_progress(observer, "synchronize-device")
@@ -5067,6 +5078,8 @@ def run_prepared_tree(
         report["tiles"] = streaming_report
     if step_forcings is not None:
         report["radar_tendency"] = step_forcings.receipt()
+    if nudging_forcings is not None:
+        report['nudging'] = nudging_forcings.receipt()
     if split_ids:
         report["devices"] = _devices_tree_receipt(
             exp, split_ids, early_steppers, cold_decisions, devices_admission)
@@ -5100,6 +5113,14 @@ def run_prepared_tree(
     initialization_blocks = getattr(initialization, "run_report_blocks", None)
     if callable(initialization_blocks):
         report.update(initialization_blocks(model))
+    wind = {str(gid): physics.wind_farm.receipt() for gid, physics in drivers.items()
+            if getattr(physics, "wind_farm", None) is not None}
+    if wind:
+        report["wind_farm"] = wind
+        for gid, physics in drivers.items():
+            if str(gid) in wind:
+                wind[str(gid)]["module_replay"] = physics.wind_farm.write_replay(
+                    evidence / f"wind-replay-d{gid:02d}.nc")
     # Default-on hydro lives on the fixed parent (grid 1): cost and products.
     from gpuwm.hydro.cost import receipt as _hydro_cost_receipt
     from gpuwm.hydro.forecast_products import publish as _hydro_products

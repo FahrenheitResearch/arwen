@@ -1711,7 +1711,8 @@ def restore_domain_state(restored: RestoredDomain, cfg, *, scratch_arena=None,
             setattr(state, name.lower(), cp.float32(source[0]))
     state.set_map_coriolis(
         raw["MAPFAC_M"], raw["MAPFAC_U"], raw["MAPFAC_V"], raw["F"],
-        raw["E"], sina=raw["SINALPHA"], cosa=raw["COSALPHA"])
+        raw["E"], sina=raw["SINALPHA"], cosa=raw["COSALPHA"],
+        msfv_inv=raw.get("MF_VX_INV"))
     warm = getattr(restored, "warm_start", None) is not None
     _restore_active_moisture(state, raw, cfg, cp, warm=warm)
     if "H_DIABATIC" in raw:
